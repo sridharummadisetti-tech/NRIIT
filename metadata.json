@@ -1,0 +1,5 @@
+{
+  "name": "NRIIT Student dashboard",
+  "description": "A web application for students to check their academic progress and interact with an AI-powered chatbot for assistance. Staff can also log in to manage student information.",
+  "requestFramePermissions": []
+}
