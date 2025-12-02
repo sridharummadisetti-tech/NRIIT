@@ -1,9 +1,8 @@
-import React from 'react';
-import { useState, useEffect, useMemo, useRef } from 'react';
-import { StudentData, User, Role, YearMarks, MarkItem, ParsedStudent, AttendanceRecord, ParsedAttendanceRecord, ImportantUpdate, MidTermMarks, MidTermSubject, FeeInstallment, YearlyFee, SectionTimeTable, WeeklyTimeTable, Notice, DailyAttendanceStatus, CourseMaterial } from '../types';
-import { GRADE_POINTS, DEPARTMENTS, DEPARTMENT_CODES } from '../constants';
+
+import React, { useState, useEffect, useMemo } from 'react';
+import { StudentData, User, Role, YearMarks, ParsedStudent, AttendanceRecord, ParsedAttendanceRecord, MidTermMarks, WeeklyTimeTable, Notice, DailyAttendanceStatus, CourseMaterial, SectionTimeTable } from '../types';
+import { GRADE_POINTS, DEPARTMENT_CODES } from '../constants';
 import InfoCard from './InfoCard';
-import IdCard from './IdCard';
 import ImportStudentsModal from './ImportStudentsModal';
 import ImportAttendanceModal from './ImportAttendanceModal';
 import { generateNoticeDraft, analyzeDocumentForMaterial } from '../services/geminiService';
@@ -56,6 +55,14 @@ const fileToDataUrl = (file: File): Promise<string> => {
         reader.onerror = reject;
         reader.readAsDataURL(file);
     });
+};
+
+const getStudentYear = (studentData: StudentData | undefined): number => {
+    if (!studentData) return 1;
+    if (studentData.year4_1 || studentData.year4_2) return 4;
+    if (studentData.year3_1 || studentData.year3_2) return 3;
+    if (studentData.year2_1 || studentData.year2_2) return 2;
+    return 1;
 };
 
 const generateRollNumber = (
@@ -485,15 +492,6 @@ const EditTimesModal: React.FC<{
       </div>
     </div>
   );
-};
-
-
-const getStudentYear = (studentData: StudentData | undefined): number => {
-    if (!studentData) return 1;
-    if (studentData.year4_1 || studentData.year4_2) return 4;
-    if (studentData.year3_1 || studentData.year3_2) return 3;
-    if (studentData.year2_1 || studentData.year2_2) return 2;
-    return 1;
 };
 
 const LiveTrackerDashboard: React.FC<{

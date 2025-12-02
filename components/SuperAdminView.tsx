@@ -1,9 +1,5 @@
 
-
-
-
-
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { User, Role, StudentData, YearMarks, ParsedStudent, AttendanceRecord, ImportantUpdate, MidTermMarks, MidTermSubject, FeeInstallment } from '../types';
 import InfoCard from './InfoCard';
 import IdCard from './IdCard';
