@@ -1,12 +1,13 @@
 
-
-import React, { useState, useEffect } from 'react';
-import { StudentData, User, YearMarks, MarkItem, AttendanceRecord, ImportantUpdate, MidTermMarks, MidTermSubject, FeeInstallment, YearlyFee, SectionTimeTable, DailySchedule, Notice, DailyAttendanceStatus, WeeklyTimeTable } from '../types';
+import React, { useState, useEffect, useRef } from 'react';
+import { StudentData, User, YearMarks, MarkItem, AttendanceRecord, ImportantUpdate, MidTermMarks, MidTermSubject, FeeInstallment, YearlyFee, SectionTimeTable, DailySchedule, Notice, DailyAttendanceStatus, WeeklyTimeTable, CourseMaterial, GeoLocation } from '../types';
 import { GRADE_POINTS } from '../constants';
 import InfoCard from './InfoCard';
 import IdCard from './IdCard';
 
-export type StudentViewType = 'overview' | 'todays_attendance' | 'attendance_history' | 'academics' | 'fees' | 'timetable' | 'notices' | 'profile_settings';
+export type StudentViewType = 'overview' | 'todays_attendance' | 'attendance_history' | 'academics' | 'fees' | 'timetable' | 'notices' | 'profile_settings' | 'materials' | 'live_location';
+
+const MERGED_CELL = '::MERGED::';
 
 // --- HELPER FUNCTIONS ---
 
@@ -213,6 +214,38 @@ const TodaysAttendanceContent: React.FC<{ user: User; studentData: StudentData; 
     }
   };
 
+  const renderScheduleRows = () => {
+    const rows: React.ReactElement[] = [];
+    for (let i = 0; i < dailySchedule.length; i++) {
+        const subject = dailySchedule[i];
+        if (!subject) continue;
+        if (subject === MERGED_CELL) continue;
+
+        let span = 1;
+        while (i + span < dailySchedule.length && dailySchedule[i + span] === MERGED_CELL) {
+            span++;
+        }
+        
+        // Approximate time: Start of first period to end of last period
+        // Format: "09:30 - 10:20" => split by ' - '
+        // periodTimes[i] is "HH:MM - HH:MM"
+        const startTimeStr = periodTimes[i]?.split(' - ')[0] || `P${i+1}`;
+        const endTimeStr = periodTimes[i + span - 1]?.split(' - ')[1] || `P${i+span}`;
+        const timeLabel = span > 1 ? `${startTimeStr} - ${endTimeStr}` : periodTimes[i];
+
+        const status = dailyAttendanceRecord ? dailyAttendanceRecord[i] : 'Not Marked';
+
+        rows.push(
+            <tr key={i} className="bg-white border-b dark:bg-gray-800 dark:border-gray-700">
+                <th scope="row" className="py-2 px-4 font-medium text-gray-900 whitespace-nowrap dark:text-white">{timeLabel}</th>
+                <td className="py-2 px-4">{subject}</td>
+                <td className="py-2 px-4">{getStatusChip(status)}</td>
+            </tr>
+        );
+    }
+    return rows;
+  };
+
   return (
     <InfoCard title={`Today's Schedule (${today.toLocaleDateString('en-US', { weekday: 'long' })})`}>
       <div className="overflow-x-auto">
@@ -225,17 +258,7 @@ const TodaysAttendanceContent: React.FC<{ user: User; studentData: StudentData; 
             </tr>
           </thead>
           <tbody>
-            {dailySchedule.map((subject, index) => {
-              if (!subject) return null;
-              const status = dailyAttendanceRecord ? dailyAttendanceRecord[index] : 'Not Marked';
-              return (
-                <tr key={index} className="bg-white border-b dark:bg-gray-800 dark:border-gray-700">
-                  <th scope="row" className="py-2 px-4 font-medium text-gray-900 whitespace-nowrap dark:text-white">{periodTimes[index] || `Period ${index + 1}`}</th>
-                  <td className="py-2 px-4">{subject}</td>
-                  <td className="py-2 px-4">{getStatusChip(status)}</td>
-                </tr>
-              );
-            })}
+            {renderScheduleRows()}
           </tbody>
         </table>
       </div>
@@ -316,6 +339,36 @@ const TimetableView: React.FC<{ user: User, timetables: SectionTimeTable[], stud
         return <InfoCard title="Weekly Timetable"><p className="text-center text-gray-500">Your timetable is not available yet.</p></InfoCard>;
     }
     
+    const renderTableBody = () => {
+        return days.map(day => {
+            const cells: React.ReactElement[] = [];
+            const daySchedule = schedule[day];
+            
+            for (let i = 0; i < daySchedule.length; i++) {
+                const subject = daySchedule[i];
+                if (subject === MERGED_CELL) continue;
+                
+                let colSpan = 1;
+                while (i + colSpan < daySchedule.length && daySchedule[i + colSpan] === MERGED_CELL) {
+                    colSpan++;
+                }
+
+                cells.push(
+                    <td key={i} colSpan={colSpan} className="p-2 border border-gray-200 dark:border-gray-700 text-center align-middle">
+                        {subject || '-'}
+                    </td>
+                );
+            }
+
+            return (
+                <tr key={day}>
+                    <th className="capitalize p-2 border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700">{day}</th>
+                    {cells}
+                </tr>
+            );
+        });
+    };
+
     return (
         <InfoCard title="Weekly Timetable">
             <div className="overflow-x-auto">
@@ -327,14 +380,127 @@ const TimetableView: React.FC<{ user: User, timetables: SectionTimeTable[], stud
                         </tr>
                     </thead>
                     <tbody>
-                        {days.map(day => (
-                            <tr key={day}>
-                                <th className="capitalize p-2 border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-700">{day}</th>
-                                {schedule[day].map((subject, index) => <td key={index} className="p-2 border border-gray-200 dark:border-gray-700">{subject || '-'}</td>)}
-                            </tr>
-                        ))}
+                        {renderTableBody()}
                     </tbody>
                 </table>
+            </div>
+        </InfoCard>
+    );
+};
+
+const LiveLocationView: React.FC<{ 
+    user: User, 
+    onUpdateLocation: (userId: number, location: GeoLocation) => void,
+    studentData: StudentData
+}> = ({ user, onUpdateLocation, studentData }) => {
+    const [isSharing, setIsSharing] = useState(false);
+    const [error, setError] = useState('');
+    const [lastPosition, setLastPosition] = useState<{lat: number, lng: number} | null>(null);
+    const watchIdRef = useRef<number | null>(null);
+
+    useEffect(() => {
+        // Initialize sharing state from existing student data if available
+        if (studentData.location?.isSharing) {
+            setIsSharing(true);
+            setLastPosition({ lat: studentData.location.lat, lng: studentData.location.lng });
+        }
+    }, []);
+
+    useEffect(() => {
+        if (isSharing) {
+            if (!navigator.geolocation) {
+                setError('Geolocation is not supported by your browser');
+                return;
+            }
+
+            const success = (position: GeolocationPosition) => {
+                const newLocation: GeoLocation = {
+                    lat: position.coords.latitude,
+                    lng: position.coords.longitude,
+                    lastUpdated: new Date().toISOString(),
+                    isSharing: true
+                };
+                setLastPosition({ lat: newLocation.lat, lng: newLocation.lng });
+                onUpdateLocation(user.id, newLocation);
+                setError('');
+            };
+
+            const error = () => {
+                setError('Unable to retrieve your location. Please check permissions.');
+                setIsSharing(false);
+            };
+
+            watchIdRef.current = navigator.geolocation.watchPosition(success, error, {
+                enableHighAccuracy: true,
+                timeout: 10000,
+                maximumAge: 0
+            });
+        } else {
+            if (watchIdRef.current !== null) {
+                navigator.geolocation.clearWatch(watchIdRef.current);
+                watchIdRef.current = null;
+            }
+            // If we turn off sharing, send an update to server that isSharing is false
+            if (studentData.location?.isSharing) {
+                 onUpdateLocation(user.id, { 
+                     lat: 0, 
+                     lng: 0, 
+                     lastUpdated: new Date().toISOString(), 
+                     isSharing: false 
+                 });
+            }
+        }
+
+        return () => {
+            if (watchIdRef.current !== null) {
+                navigator.geolocation.clearWatch(watchIdRef.current);
+            }
+        };
+    }, [isSharing, user.id]);
+
+    return (
+        <InfoCard title="Live Location Sharing">
+            <div className="flex flex-col items-center justify-center space-y-6 py-8">
+                <div className={`relative w-24 h-24 rounded-full flex items-center justify-center transition-all duration-500 ${isSharing ? 'bg-green-100 dark:bg-green-900/30 shadow-[0_0_20px_rgba(34,197,94,0.5)]' : 'bg-gray-100 dark:bg-gray-700'}`}>
+                    <svg xmlns="http://www.w3.org/2000/svg" className={`h-10 w-10 transition-colors duration-300 ${isSharing ? 'text-green-600 dark:text-green-400' : 'text-gray-400'}`} viewBox="0 0 20 20" fill="currentColor">
+                        <path fillRule="evenodd" d="M5.05 4.05a7 7 0 119.9 9.9L10 18.9l-4.95-4.95a7 7 0 010-9.9zM10 11a2 2 0 100-4 2 2 0 000 4z" clipRule="evenodd" />
+                    </svg>
+                    {isSharing && (
+                        <span className="absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-20 animate-ping"></span>
+                    )}
+                </div>
+
+                <div className="text-center space-y-2">
+                    <h3 className="text-lg font-bold text-gray-900 dark:text-white">
+                        {isSharing ? 'You are Sharing your Location' : 'Location Sharing is Off'}
+                    </h3>
+                    <p className="text-sm text-gray-500 dark:text-gray-400 max-w-xs mx-auto">
+                        {isSharing 
+                            ? 'Staff members can currently see your live location on the campus map.' 
+                            : 'Enable this to allow staff to view your current location on campus for safety or attendance purposes.'}
+                    </p>
+                </div>
+
+                {error && <p className="text-red-500 text-sm bg-red-50 dark:bg-red-900/20 px-4 py-2 rounded">{error}</p>}
+
+                <button
+                    onClick={() => setIsSharing(!isSharing)}
+                    className={`px-8 py-3 rounded-full font-bold shadow-lg transform transition hover:scale-105 active:scale-95 ${
+                        isSharing 
+                        ? 'bg-red-500 text-white hover:bg-red-600' 
+                        : 'bg-green-600 text-white hover:bg-green-700'
+                    }`}
+                >
+                    {isSharing ? 'Stop Sharing' : 'Start Sharing Location'}
+                </button>
+
+                {isSharing && lastPosition && (
+                    <div className="mt-4 p-4 bg-gray-50 dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 text-xs font-mono">
+                        <p>Lat: {lastPosition.lat.toFixed(6)}</p>
+                        <p>Lng: {lastPosition.lng.toFixed(6)}</p>
+                        <p className="text-gray-400 mt-1">Last Updated: {new Date().toLocaleTimeString()}</p>
+                    </div>
+                )}
             </div>
         </InfoCard>
     );
@@ -429,9 +595,52 @@ const NoticeBoardContent: React.FC<{ notices: Notice[], department: string }> = 
     return <InfoCard title="Notice Board"><p>{departmentNotices.length} notices found for your department.</p></InfoCard>;
 };
 
+const MaterialsContent: React.FC<{ materials: CourseMaterial[], user: User, studentData: StudentData }> = ({ materials, user, studentData }) => {
+    const year = getStudentYear(studentData);
+    const relevantMaterials = materials.filter(m => 
+        m.department === user.department && 
+        m.year === year && 
+        m.section === user.section
+    );
+
+    const getIcon = (type: string) => {
+        if (type === 'pdf') return <svg xmlns="http://www.w3.org/2000/svg" className="h-10 w-10 text-red-500" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clipRule="evenodd" /></svg>;
+        if (type === 'image') return <svg xmlns="http://www.w3.org/2000/svg" className="h-10 w-10 text-blue-500" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M4 3a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V5a2 2 0 00-2-2H4zm12 12H4l4-8 3 6 2-4 3 6z" clipRule="evenodd" /></svg>;
+        return <svg xmlns="http://www.w3.org/2000/svg" className="h-10 w-10 text-gray-500" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clipRule="evenodd" /></svg>;
+    };
+
+    return (
+        <InfoCard title="Course Materials">
+            {relevantMaterials.length === 0 ? (
+                <p className="text-center text-gray-500 py-8">No materials uploaded for your section yet.</p>
+            ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    {relevantMaterials.map(material => (
+                        <div key={material.id} className="border border-gray-200 dark:border-gray-700 rounded-lg p-4 flex flex-col items-center text-center card-interactive bg-gray-50 dark:bg-gray-700/50">
+                            <div className="mb-3">
+                                {getIcon(material.fileType)}
+                            </div>
+                            <h4 className="font-semibold text-lg mb-1">{material.title}</h4>
+                            <p className="text-sm text-gray-500 dark:text-gray-400 mb-2">{material.description}</p>
+                            <p className="text-xs text-gray-400 mb-4">Uploaded by {material.uploadedBy} on {material.uploadedAt}</p>
+                            <a 
+                                href={material.fileUrl} 
+                                download={material.fileName} 
+                                className="mt-auto px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded hover:bg-blue-700 w-full"
+                            >
+                                Download / View
+                            </a>
+                        </div>
+                    ))}
+                </div>
+            )}
+        </InfoCard>
+    );
+};
+
 // --- MAIN STUDENT VIEW COMPONENT ---
 
-const StudentView: React.FC<StudentViewProps> = ({ user, studentData, timetables, notices, periodTimes, onUpdatePassword, onUpdateUser, activeView, setActiveView, onBiometricSetup }) => {
+const StudentView: React.FC<StudentViewProps> = ({ user, studentData, timetables, notices, periodTimes, materials, onUpdatePassword, onUpdateUser, activeView, setActiveView, onBiometricSetup, onUpdateLocation }) => {
   const [showIdCard, setShowIdCard] = useState(false);
 
   useEffect(() => {
@@ -453,12 +662,14 @@ const StudentView: React.FC<StudentViewProps> = ({ user, studentData, timetables
       case 'timetable': return <TimetableView user={user} timetables={timetables} studentData={studentData} periodTimes={periodTimes} />;
       case 'notices': return <NoticeBoardContent notices={notices} department={user.department} />;
       case 'profile_settings': return <ProfileSettingsView user={user} onUpdateUser={onUpdateUser} onUpdatePassword={onUpdatePassword} onBiometricSetup={onBiometricSetup} />;
+      case 'materials': return <MaterialsContent materials={materials} user={user} studentData={studentData} />;
+      case 'live_location': return <LiveLocationView user={user} onUpdateLocation={onUpdateLocation} studentData={studentData} />;
       default: return <div />;
     }
   };
 
   return (
-    <div className="anim-content-block">
+    <div className="anim-enter-student">
         {renderActiveView()}
 
       {showIdCard && studentData && (
@@ -476,11 +687,13 @@ interface StudentViewProps {
   timetables: SectionTimeTable[];
   notices: Notice[];
   periodTimes: string[];
+  materials: CourseMaterial[];
   onUpdatePassword: (userId: number, currentPass: string, newPass: string) => 'SUCCESS' | 'INCORRECT_PASSWORD';
   onUpdateUser: (user: User) => void;
   activeView: StudentViewType | null;
   setActiveView: React.Dispatch<React.SetStateAction<StudentViewType | null>>;
   onBiometricSetup: (user: User) => Promise<boolean>;
+  onUpdateLocation: (userId: number, location: GeoLocation) => void;
 }
 
 

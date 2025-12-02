@@ -200,3 +200,115 @@ export const extractAttendanceFromFile = async (file: File): Promise<ParsedAtten
     throw new Error("Failed to parse attendance data from the file. Please ensure the file is clear and contains valid details.");
   }
 };
+
+export const generateNoticeDraft = async (topic: string, authorName: string, department: string): Promise<{title: string, content: string}> => {
+  if (!process.env.API_KEY) {
+    throw new Error("API_KEY environment variable not set");
+  }
+
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+
+  const prompt = `
+    You are an assistant for a college staff member.
+    Write a formal notice for the ${department} department notice board.
+    
+    Topic: ${topic}
+    Author: ${authorName}
+    
+    The notice should be professional, clear, and concise.
+    Return the result as a JSON object with 'title' and 'content' fields.
+  `;
+
+  const schema = {
+    type: Type.OBJECT,
+    properties: {
+      title: { type: Type.STRING, description: "A concise and professional title for the notice" },
+      content: { type: Type.STRING, description: "The body of the notice" },
+    },
+    required: ["title", "content"],
+  };
+
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: prompt,
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: schema,
+      },
+    });
+
+    const jsonText = response.text.trim();
+    return JSON.parse(jsonText);
+  } catch (error) {
+    console.error("Error generating notice draft:", error);
+    throw new Error("Failed to generate notice draft.");
+  }
+};
+
+export const analyzeDocumentForMaterial = async (file: File): Promise<{title: string, description: string}> => {
+  if (!process.env.API_KEY) {
+    throw new Error("API_KEY environment variable not set");
+  }
+
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  
+  let parts: any[] = [];
+  const promptText = `
+    Analyze the provided content/document (which is being uploaded as course material) and provide:
+    1. A suitable, concise Title.
+    2. A short Description (1-2 sentences) summarizing what the document contains.
+    
+    Return as JSON with 'title' and 'description'.
+  `;
+
+  try {
+    if (file.type === 'application/pdf') {
+        const base64Data = await blobToBase64(file);
+        parts = [
+            { inlineData: { mimeType: 'application/pdf', data: base64Data } },
+            { text: promptText }
+        ];
+    } else if (file.type.startsWith('image/')) {
+         const base64Data = await blobToBase64(file);
+         parts = [
+             { inlineData: { mimeType: file.type, data: base64Data } },
+             { text: promptText }
+         ];
+    } else if (file.name.endsWith('.docx')) {
+         const text = await readFileAsText(file);
+         parts = [{ text: `${promptText}\n\nDocument Content:\n${text}` }];
+    } else {
+         const text = await readFileAsText(file).catch(() => "");
+         if(text) {
+             parts = [{ text: `${promptText}\n\nDocument Content:\n${text}` }];
+         } else {
+             throw new Error("Unsupported file type for AI analysis.");
+         }
+    }
+
+    const schema = {
+      type: Type.OBJECT,
+      properties: {
+        title: { type: Type.STRING },
+        description: { type: Type.STRING },
+      },
+      required: ["title", "description"],
+    };
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: { parts },
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: schema,
+      },
+    });
+
+    const jsonText = response.text.trim();
+    return JSON.parse(jsonText);
+  } catch (error) {
+    console.error("Error analyzing document:", error);
+    throw new Error("Failed to analyze document.");
+  }
+};

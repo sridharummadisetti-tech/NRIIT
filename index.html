@@ -35,59 +35,63 @@
         z-index: 0;
     }
 
-    /* --- Professional 3D Animations --- */
-    @keyframes grid-item-enter {
-        from {
-            opacity: 0;
-            transform: scale(0.9) translateY(30px) translateZ(50px) rotateX(-20deg);
-        }
-        to {
-            opacity: 1;
-            transform: scale(1) translateY(0) translateZ(0) rotateX(0deg);
-        }
+    /* --- 1. Login Animation: "Soft Rise" --- */
+    @keyframes login-soft-rise {
+        0% { opacity: 0; transform: translateY(30px); }
+        100% { opacity: 1; transform: translateY(0); }
     }
-    .animated-grid > * {
-        animation: grid-item-enter 0.6s ease-out forwards;
-        opacity: 0;
-        transform-style: preserve-3d;
-    }
-    .animated-grid > *:nth-child(1) { animation-delay: 0.1s; }
-    .animated-grid > *:nth-child(2) { animation-delay: 0.2s; }
-    .animated-grid > *:nth-child(3) { animation-delay: 0.3s; }
-    .animated-grid > *:nth-child(4) { animation-delay: 0.4s; }
-    .animated-grid > *:nth-child(5) { animation-delay: 0.5s; }
-    .animated-grid > *:nth-child(6) { animation-delay: 0.6s; }
-    .animated-grid > *:nth-child(7) { animation-delay: 0.7s; }
-
-    @keyframes content-block-enter-3d {
-        from {
-            opacity: 0;
-            transform: translateY(20px) rotateX(-5deg);
-        }
-        to {
-            opacity: 1;
-            transform: translateY(0) rotateX(0deg);
-        }
-    }
-    .anim-content-block {
-        animation: content-block-enter-3d 0.5s ease-out forwards;
-        transform-style: preserve-3d;
+    .anim-enter-login {
+        animation: login-soft-rise 0.8s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
     }
 
-    /* 3D NRIIT Text Animation */
+    /* --- 2. Student Animation: "Staggered Slide-In" --- */
+    @keyframes student-slide-in {
+        0% { opacity: 0; transform: translateX(20px); }
+        100% { opacity: 1; transform: translateX(0); }
+    }
+    .anim-enter-student > * {
+        opacity: 0; /* Initially hidden */
+        animation: student-slide-in 0.5s ease-out forwards;
+    }
+    .anim-enter-student > *:nth-child(1) { animation-delay: 0.1s; }
+    .anim-enter-student > *:nth-child(2) { animation-delay: 0.2s; }
+    .anim-enter-student > *:nth-child(3) { animation-delay: 0.3s; }
+    .anim-enter-student > *:nth-child(4) { animation-delay: 0.4s; }
+    .anim-enter-student > *:nth-child(5) { animation-delay: 0.5s; }
+
+    /* --- 3. Staff Animation: "Professional Zoom" --- */
+    @keyframes staff-zoom-reveal {
+        0% { opacity: 0; transform: scale(0.96); }
+        100% { opacity: 1; transform: scale(1); }
+    }
+    .anim-enter-staff {
+        animation: staff-zoom-reveal 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    }
+
+    /* --- 4. Admin Animation: "Structural Drop" --- */
+    @keyframes admin-drop-in {
+        0% { opacity: 0; transform: translateY(-15px); }
+        100% { opacity: 1; transform: translateY(0); }
+    }
+    .anim-enter-admin {
+        animation: admin-drop-in 0.7s ease-out forwards;
+    }
+
+    /* Common Utility Animations */
+    
+    /* NRIIT Text Animation (2D) */
     .nriit-3d-text {
         font-size: 3.5rem;
         font-weight: 800;
         display: flex;
-        perspective: 500px;
+        gap: 2px;
     }
     .nriit-3d-text span {
         display: inline-block;
-        transform-style: preserve-3d;
         transition: transform 0.3s ease;
     }
     .nriit-3d-text:hover span {
-        transform: translateY(-5px) translateZ(10px) rotateX(20deg);
+        transform: translateY(-5px);
     }
     .nriit-3d-text span:nth-child(1) { animation: float-1 4s ease-in-out infinite; }
     .nriit-3d-text span:nth-child(2) { animation: float-2 4s ease-in-out infinite; }
@@ -95,43 +99,17 @@
     .nriit-3d-text span:nth-child(4) { animation: float-4 4s ease-in-out infinite; }
     .nriit-3d-text span:nth-child(5) { animation: float-5 4s ease-in-out infinite; }
     
-    @keyframes float-1 { 0%, 100% { transform: translateY(0) rotateY(0deg); } 50% { transform: translateY(-8px) rotateY(5deg); } }
-    @keyframes float-2 { 0%, 100% { transform: translateY(0) rotateY(0deg); } 50% { transform: translateY(-4px) rotateY(-5deg); } }
-    @keyframes float-3 { 0%, 100% { transform: translateY(0) rotateY(0deg); } 50% { transform: translateY(-10px) rotateY(3deg); } }
-    @keyframes float-4 { 0%, 100% { transform: translateY(0) rotateY(0deg); } 50% { transform: translateY(-5px) rotateY(-3deg); } }
-    @keyframes float-5 { 0%, 100% { transform: translateY(0) rotateY(0deg); } 50% { transform: translateY(-7px) rotateY(6deg); } }
-
-    /* Interactive Lighting Button Effect */
-    .lighting-button {
-        position: relative;
-        overflow: hidden;
-        z-index: 1;
-    }
-
-    .lighting-button::before {
-        content: '';
-        position: absolute;
-        left: var(--mouse-x, 50%);
-        top: var(--mouse-y, 50%);
-        width: 200px;
-        height: 200px;
-        background: radial-gradient(circle at center, rgba(255, 255, 255, 0.25) 0%, rgba(255, 255, 255, 0) 50%);
-        transform: translate(-50%, -50%);
-        opacity: 0;
-        transition: opacity 0.3s ease-in-out;
-        pointer-events: none;
-        z-index: -1;
-    }
-
-    .lighting-button:hover::before {
-        opacity: 1;
-    }
+    @keyframes float-1 { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
+    @keyframes float-2 { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-2px); } }
+    @keyframes float-3 { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
+    @keyframes float-4 { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
+    @keyframes float-5 { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
 
     /* Timetable Row Animation */
     @keyframes timetable-row-enter {
         from {
             opacity: 0;
-            transform: translateX(-20px);
+            transform: translateX(-10px);
         }
         to {
             opacity: 1;
@@ -139,7 +117,7 @@
         }
     }
     .timetable-animate tbody tr {
-        animation: timetable-row-enter 0.4s ease-out forwards;
+        animation: timetable-row-enter 0.3s ease-out forwards;
         opacity: 0;
     }
     .timetable-animate tbody tr:nth-child(1) { animation-delay: 0.05s; }
@@ -150,8 +128,6 @@
     .timetable-animate tbody tr:nth-child(6) { animation-delay: 0.3s; }
     .timetable-animate tbody tr:nth-child(7) { animation-delay: 0.35s; }
     .timetable-animate tbody tr:nth-child(8) { animation-delay: 0.4s; }
-
-    /* --- Internal App Animations --- */
 
     /* Modal animations */
     @keyframes modal-backdrop-enter { from { opacity: 0; } to { opacity: 1; } }
@@ -177,18 +153,18 @@
         transition: transform 0.2s ease-out, box-shadow 0.2s ease-out;
     }
     .card-interactive:hover {
-        transform: translateY(-5px);
-        box-shadow: 0 10px 20px rgba(0,0,0,0.08);
+        transform: translateY(-2px);
+        box-shadow: 0 4px 10px rgba(0,0,0,0.05);
     }
     .dark .card-interactive:hover {
-        box-shadow: 0 10px 20px rgba(0,0,0,0.2);
+        box-shadow: 0 4px 10px rgba(0,0,0,0.2);
     }
 
     .list-item-interactive {
         transition: background-color 0.2s ease-out, transform 0.2s ease-out;
     }
     .list-item-interactive:hover {
-        transform: translateX(4px);
+        transform: translateX(2px);
     }
     
     /* Accordion */
@@ -200,14 +176,9 @@
         animation: accordion-content-enter 0.3s ease-out;
     }
 
-    /* Progress bar */
-    .anim-progress-bar {
-        transition: width 1s cubic-bezier(0.25, 1, 0.5, 1);
-    }
-
     /* Chatbot */
     @keyframes chat-window-enter {
-        from { transform: translateY(50px) scale(0.95); opacity: 0; }
+        from { transform: translateY(20px) scale(0.98); opacity: 0; }
         to { transform: translateY(0) scale(1); opacity: 1; }
     }
     .anim-chat-window {
@@ -216,11 +187,11 @@
     }
 
     @keyframes chat-bubble-enter {
-        from { opacity: 0; transform: scale(0.9) translateY(10px); }
-        to { opacity: 1; transform: scale(1) translateY(0); }
+        from { opacity: 0; transform: translateY(5px); }
+        to { opacity: 1; transform: translateY(0); }
     }
     .anim-chat-bubble {
-        animation: chat-bubble-enter 0.4s ease-out forwards;
+        animation: chat-bubble-enter 0.3s ease-out forwards;
     }
     
     /* Splash Screen Animation */
@@ -229,7 +200,7 @@
         to { opacity: 0; visibility: hidden; }
     }
     @keyframes splash-logo-enter {
-        from { opacity: 0; transform: scale(0.9); }
+        from { opacity: 0; transform: scale(0.95); }
         to { opacity: 1; transform: scale(1); }
     }
     .anim-splash-screen {

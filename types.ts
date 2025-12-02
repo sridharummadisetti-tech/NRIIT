@@ -1,3 +1,4 @@
+
 export enum Role {
   STUDENT = 'student',
   STAFF = 'staff',
@@ -70,6 +71,13 @@ export interface YearlyFee {
 
 export type DailyAttendanceStatus = 'Present' | 'Absent' | 'Not Marked';
 
+export interface GeoLocation {
+    lat: number;
+    lng: number;
+    lastUpdated: string; // ISO String
+    isSharing: boolean;
+}
+
 export interface StudentData {
   id: number;
   userId: number;
@@ -91,6 +99,7 @@ export interface StudentData {
   year3_2: YearMarks | null;
   year4_1: YearMarks | null;
   year4_2: YearMarks | null;
+  location?: GeoLocation;
 }
 
 export interface ParsedStudent {
@@ -152,4 +161,19 @@ export interface Notice {
   authorName: string;
   date: string; // YYYY-MM-DD
   department: string;
+}
+
+// Course Material Types
+export interface CourseMaterial {
+  id: number;
+  title: string;
+  description: string;
+  fileType: 'pdf' | 'image' | 'doc' | 'other';
+  fileUrl: string; // Base64 string for demo
+  fileName: string;
+  uploadedBy: string; // Staff Name
+  uploadedAt: string; // YYYY-MM-DD
+  department: string;
+  year: number;
+  section: string;
 }

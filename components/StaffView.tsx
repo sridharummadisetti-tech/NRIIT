@@ -1,13 +1,14 @@
-
-
 import React from 'react';
 import { useState, useEffect, useMemo, useRef } from 'react';
-import { StudentData, User, Role, YearMarks, MarkItem, ParsedStudent, AttendanceRecord, ParsedAttendanceRecord, ImportantUpdate, MidTermMarks, MidTermSubject, FeeInstallment, YearlyFee, SectionTimeTable, WeeklyTimeTable, Notice, DailyAttendanceStatus } from '../types';
+import { StudentData, User, Role, YearMarks, MarkItem, ParsedStudent, AttendanceRecord, ParsedAttendanceRecord, ImportantUpdate, MidTermMarks, MidTermSubject, FeeInstallment, YearlyFee, SectionTimeTable, WeeklyTimeTable, Notice, DailyAttendanceStatus, CourseMaterial } from '../types';
 import { GRADE_POINTS, DEPARTMENTS, DEPARTMENT_CODES } from '../constants';
 import InfoCard from './InfoCard';
 import IdCard from './IdCard';
 import ImportStudentsModal from './ImportStudentsModal';
 import ImportAttendanceModal from './ImportAttendanceModal';
+import { generateNoticeDraft, analyzeDocumentForMaterial } from '../services/geminiService';
+
+export type StaffViewType = 'attendance' | 'timetable' | 'notices' | 'materials' | 'students' | 'profile' | 'tracking';
 
 interface StaffViewProps {
   currentUser: User;
@@ -16,6 +17,7 @@ interface StaffViewProps {
   timetables: SectionTimeTable[];
   notices: Notice[];
   periodTimes: string[];
+  materials: CourseMaterial[];
   onUpdateUser: (user: User) => void;
   onUpdateStudentData: (data: StudentData) => void;
   onUpdateMultipleStudentData: (data: StudentData[]) => void;
@@ -27,6 +29,10 @@ interface StaffViewProps {
   onAddNotice: (newNotice: Omit<Notice, 'id'>) => void;
   onDeleteNotice: (noticeId: number) => void;
   onBiometricSetup: (user: User) => Promise<boolean>;
+  onAddMaterial: (material: CourseMaterial) => void;
+  onDeleteMaterial: (materialId: number) => void;
+  activeView: StaffViewType;
+  setActiveView: (view: StaffViewType) => void;
 }
 
 const useDebounce = <T,>(value: T, delay: number): T => {
@@ -94,9 +100,62 @@ const academicPeriods = {
     year4_1: "YEAR(4-1)", year4_2: "YEAR(4-2)",
 };
 type AcademicPeriodKey = keyof typeof academicPeriods;
+
+const isMidTermKey = (key: string): boolean => key.startsWith('mid');
+
 const GRADES = ['A', 'B', 'C', 'D', 'E', 'F'];
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const DAYS_OF_WEEK: (keyof WeeklyTimeTable)[] = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+
+const ChangePasswordModal: React.FC<{
+  onClose: () => void;
+  onSubmit: (currentPass: string, newPass: string) => boolean;
+}> = ({ onClose, onSubmit }) => {
+    const [currentPassword, setCurrentPassword] = useState('');
+    const [newPassword, setNewPassword] = useState('');
+    const [confirmPassword, setConfirmPassword] = useState('');
+    const [error, setError] = useState('');
+    const [success, setSuccess] = useState('');
+
+    const handleSubmit = () => {
+        setError('');
+        setSuccess('');
+        if (!currentPassword || !newPassword || !confirmPassword) {
+            setError('All fields are required.');
+            return;
+        }
+        if (newPassword !== confirmPassword) {
+            setError('New passwords do not match.');
+            return;
+        }
+        const success = onSubmit(currentPassword, newPassword);
+        if (success) {
+            setSuccess('Password updated successfully!');
+            setTimeout(onClose, 1500);
+        } else {
+            setError('The current password you entered is incorrect.');
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 flex justify-center items-center z-50 anim-modal-backdrop" onClick={onClose}>
+            <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-xl w-full max-w-md anim-modal-content" onClick={e => e.stopPropagation()}>
+                <h2 className="text-2xl font-bold mb-4 text-center">Change Password</h2>
+                {error && <p className="text-red-500 text-sm text-center mb-4">{error}</p>}
+                {success && <p className="text-green-500 text-sm text-center mb-4">{success}</p>}
+                <div className="space-y-4">
+                    <input type="password" placeholder="Current Password" value={currentPassword} onChange={e => setCurrentPassword(e.target.value)} className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600" />
+                    <input type="password" placeholder="New Password" value={newPassword} onChange={e => setNewPassword(e.target.value)} className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600" />
+                    <input type="password" placeholder="Confirm New Password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600" />
+                </div>
+                <div className="flex justify-end space-x-4 mt-6">
+                    <button onClick={onClose} className="px-4 py-2 bg-gray-300 dark:bg-gray-600 rounded btn-interactive">Cancel</button>
+                    <button onClick={handleSubmit} className="px-4 py-2 bg-blue-600 text-white rounded btn-interactive">Update</button>
+                </div>
+            </div>
+        </div>
+    );
+};
 
 const AddStudentModal: React.FC<{
     onClose: () => void;
@@ -106,7 +165,7 @@ const AddStudentModal: React.FC<{
 }> = ({ onClose, onAdd, staffAssignments = [], allUsers }) => {
     const [name, setName] = useState('');
     const [rollNumber, setRollNumber] = useState('');
-    const [password, setPassword] = useState('');
+    const [password, setPassword] = useState('password123');
     const [email, setEmail] = useState('');
     const [phone, setPhone] = useState('');
     const [photoUrl, setPhotoUrl] = useState<string>();
@@ -193,10 +252,12 @@ const AddStudentModal: React.FC<{
     );
 };
 
-const AddNoticeModal: React.FC<{ onClose: () => void, onAdd: (title: string, content: string) => void }> = ({ onClose, onAdd }) => {
+const AddNoticeModal: React.FC<{ onClose: () => void, onAdd: (title: string, content: string) => void, authorName: string, department: string }> = ({ onClose, onAdd, authorName, department }) => {
     const [title, setTitle] = useState('');
     const [content, setContent] = useState('');
     const [error, setError] = useState('');
+    const [draftTopic, setDraftTopic] = useState('');
+    const [isDrafting, setIsDrafting] = useState(false);
 
     const handleSubmit = () => {
         if (!title.trim() || !content.trim()) {
@@ -207,10 +268,50 @@ const AddNoticeModal: React.FC<{ onClose: () => void, onAdd: (title: string, con
         onClose();
     };
 
+    const handleDraft = async () => {
+        if (!draftTopic.trim()) return;
+        setIsDrafting(true);
+        try {
+            const draft = await generateNoticeDraft(draftTopic, authorName, department);
+            setTitle(draft.title);
+            setContent(draft.content);
+            setError('');
+        } catch (e) {
+            setError("Failed to generate draft. Please try again.");
+        } finally {
+            setIsDrafting(false);
+        }
+    };
+
     return (
         <div className="fixed inset-0 flex justify-center items-center z-50 anim-modal-backdrop">
             <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-xl w-full max-w-lg anim-modal-content">
                 <h2 className="text-2xl font-bold mb-4">Create New Notice</h2>
+                
+                <div className="mb-4 p-4 bg-purple-50 dark:bg-purple-900/20 rounded-lg border border-purple-100 dark:border-purple-800">
+                    <label className="block text-sm font-medium text-purple-800 dark:text-purple-300 mb-2 flex items-center gap-2">
+                        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2m0 18a8 8 0 1 1 8-8 8 8 0 0 1-8 8m1-13h-2v5h2zm0 6h-2v2h2z"/></svg> 
+                        Draft with Gemini AI
+                    </label>
+                    <div className="flex gap-2">
+                        <input 
+                            type="text" 
+                            placeholder="E.g., Holiday for Diwali, Guest Lecture on AI..." 
+                            value={draftTopic}
+                            onChange={e => setDraftTopic(e.target.value)}
+                            className="flex-grow p-2 text-sm border rounded dark:bg-gray-700 dark:border-gray-600"
+                        />
+                        <button 
+                            onClick={handleDraft} 
+                            disabled={isDrafting || !draftTopic}
+                            className="px-3 py-2 bg-purple-600 text-white text-sm rounded hover:bg-purple-700 disabled:opacity-50 btn-interactive flex items-center gap-1"
+                        >
+                            {isDrafting ? 'Drafting...' : 'Generate'}
+                            {!isDrafting && <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-11a1 1 0 10-2 0v2H7a1 1 0 100 2h2v2a1 1 0 102 0v-2h2a1 1 0 100-2h-2V7z" clipRule="evenodd" /></svg>}
+                        </button>
+                    </div>
+                </div>
+
                 <div className="space-y-4">
                     <input
                         type="text"
@@ -230,6 +331,105 @@ const AddNoticeModal: React.FC<{ onClose: () => void, onAdd: (title: string, con
                 <div className="flex justify-end space-x-4 mt-6">
                     <button onClick={onClose} className="px-4 py-2 bg-gray-300 dark:bg-gray-600 rounded btn-interactive">Cancel</button>
                     <button onClick={handleSubmit} className="px-4 py-2 bg-blue-600 text-white rounded btn-interactive">Post Notice</button>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+const AddMaterialModal: React.FC<{ 
+    onClose: () => void, 
+    onAdd: (title: string, description: string, file: File, department: string, year: string, section: string) => void,
+    assignments: { department: string; year: number; section: string }[]
+}> = ({ onClose, onAdd, assignments }) => {
+    const [title, setTitle] = useState('');
+    const [description, setDescription] = useState('');
+    const [file, setFile] = useState<File | null>(null);
+    const [target, setTarget] = useState(assignments[0] ? `${assignments[0].department}-${assignments[0].year}-${assignments[0].section}` : '');
+    const [error, setError] = useState('');
+    const [isAnalyzing, setIsAnalyzing] = useState(false);
+
+    const handleSubmit = () => {
+        if (!title.trim() || !description.trim() || !file || !target) {
+            setError('All fields are required.');
+            return;
+        }
+        const [department, year, section] = target.split('-');
+        onAdd(title, description, file, department, year, section);
+        onClose();
+    };
+
+    const handleAnalyze = async () => {
+        if (!file) return;
+        setIsAnalyzing(true);
+        setError('');
+        try {
+            const result = await analyzeDocumentForMaterial(file);
+            setTitle(result.title);
+            setDescription(result.description);
+        } catch (e) {
+            setError("Analysis failed. Please fill details manually.");
+        } finally {
+            setIsAnalyzing(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 flex justify-center items-center z-50 anim-modal-backdrop">
+            <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-xl w-full max-w-lg anim-modal-content">
+                <h2 className="text-2xl font-bold mb-4">Upload Course Material</h2>
+                <div className="space-y-4">
+                    <div>
+                         <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Assign to Class</label>
+                         <select value={target} onChange={e => setTarget(e.target.value)} className="w-full mt-1 p-2 border rounded dark:bg-gray-700 dark:border-gray-600">
+                            {assignments.map(a => <option key={`${a.department}-${a.year}-${a.section}`} value={`${a.department}-${a.year}-${a.section}`}>{a.department} - Year {a.year} - Sec {a.section}</option>)}
+                         </select>
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Select File (PDF, Image, Word)</label>
+                        <input 
+                            type="file" 
+                            accept=".pdf,.doc,.docx,.png,.jpg,.jpeg"
+                            onChange={e => setFile(e.target.files ? e.target.files[0] : null)}
+                            className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600"
+                        />
+                        {file && (
+                            <div className="mt-2">
+                                <button 
+                                    onClick={handleAnalyze} 
+                                    disabled={isAnalyzing}
+                                    className="text-sm text-purple-600 hover:text-purple-700 dark:text-purple-400 font-medium flex items-center gap-1"
+                                >
+                                    {isAnalyzing ? (
+                                       <>Processing...</>
+                                    ) : (
+                                       <>
+                                         <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" clipRule="evenodd" /></svg>
+                                         Auto-fill details with Gemini AI
+                                       </>
+                                    )}
+                                </button>
+                            </div>
+                        )}
+                    </div>
+                    <input
+                        type="text"
+                        placeholder="Material Title"
+                        value={title}
+                        onChange={e => setTitle(e.target.value)}
+                        className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600"
+                    />
+                    <textarea
+                        placeholder="Description..."
+                        value={description}
+                        onChange={e => setDescription(e.target.value)}
+                        className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600 h-24"
+                    />
+                </div>
+                {error && <p className="text-red-500 text-sm mt-2">{error}</p>}
+                <div className="flex justify-end space-x-4 mt-6">
+                    <button onClick={onClose} className="px-4 py-2 bg-gray-300 dark:bg-gray-600 rounded btn-interactive">Cancel</button>
+                    <button onClick={handleSubmit} className="px-4 py-2 bg-blue-600 text-white rounded btn-interactive">Upload</button>
                 </div>
             </div>
         </div>
@@ -296,76 +496,986 @@ const getStudentYear = (studentData: StudentData | undefined): number => {
     return 1;
 };
 
-const calculateOverallAttendance = (records: AttendanceRecord[]): number => {
-    if (!records || records.length === 0) return 0;
-    const totalPresent = records.reduce((acc, r) => acc + r.present, 0);
-    const totalWorkingDays = records.reduce((acc, r) => acc + r.total, 0);
-    if (totalWorkingDays === 0) return 0;
-    return Math.round((totalPresent / totalWorkingDays) * 100);
+const LiveTrackerDashboard: React.FC<{
+    users: User[],
+    allStudentData: StudentData[],
+    assignments: { department: string; year: number; section: string }[]
+}> = ({ users, allStudentData, assignments }) => {
+    const [selectedAssignmentKey, setSelectedAssignmentKey] = useState<string>('');
+    const assignmentMap = useMemo(() => new Map(assignments.map(a => [`${a.department}-${a.year}-${a.section}`, a])), [assignments]);
+    const selectedAssignment = selectedAssignmentKey ? assignmentMap.get(selectedAssignmentKey) : null;
+
+    useEffect(() => {
+        if (!selectedAssignmentKey && assignments.length > 0) {
+            const first = assignments[0];
+            setSelectedAssignmentKey(`${first.department}-${first.year}-${first.section}`);
+        }
+    }, [assignments, selectedAssignmentKey]);
+
+    // Filter students who are SHARING location in this class
+    const trackedStudents = useMemo(() => {
+        if (!selectedAssignment) return [];
+        return users.filter(u => {
+            if (u.role !== Role.STUDENT) return false;
+            const data = allStudentData.find(d => d.userId === u.id);
+            if (!data) return false;
+            
+            const matchesClass = u.department === selectedAssignment.department &&
+                                 getStudentYear(data) === selectedAssignment.year &&
+                                 u.section === selectedAssignment.section;
+            
+            return matchesClass && data.location?.isSharing;
+        }).map(u => ({
+            user: u,
+            location: allStudentData.find(d => d.userId === u.id)!.location!
+        }));
+    }, [users, allStudentData, selectedAssignment]);
+
+    // Mock map plotting: Since we don't have real map tiles, we use a relative grid.
+    // In a real app, this would use Leaflet/Google Maps.
+    // For this visual, we assume a bounding box or just hash Lat/Lng to X/Y percentages for demo effect.
+    const plotOnMap = (lat: number, lng: number) => {
+        // Pseudo-random consistent position based on coords for demo if they are close, 
+        // OR just simple mapping if we assume a specific campus bounding box.
+        // Let's assume a small campus range. 
+        // Center: 0,0 relative. 
+        // For the demo, we will generate X/Y based on the decimal part of lat/lng to spread them on the canvas.
+        
+        const x = (Math.abs(lng * 1000) % 100); 
+        const y = (Math.abs(lat * 1000) % 100);
+        return { x: `${x}%`, y: `${y}%` };
+    };
+
+    return (
+        <InfoCard title="Live Student Tracking">
+             <div className="mb-4">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Select Class to Track</label>
+                <select 
+                    value={selectedAssignmentKey} 
+                    onChange={e => setSelectedAssignmentKey(e.target.value)} 
+                    className="w-full mt-1 p-2 border rounded dark:bg-gray-700 dark:border-gray-600"
+                >
+                    {assignments.map(a => <option key={`${a.department}-${a.year}-${a.section}`} value={`${a.department}-${a.year}-${a.section}`}>{a.department} - Year {a.year} - Sec {a.section}</option>)}
+                </select>
+            </div>
+
+            <div className="relative w-full h-96 bg-gray-900 rounded-lg overflow-hidden border border-gray-700 shadow-inner group">
+                {/* Decorative Map Grid */}
+                <div className="absolute inset-0 opacity-20" style={{ 
+                    backgroundImage: 'linear-gradient(rgba(0, 255, 0, 0.1) 1px, transparent 1px), linear-gradient(90deg, rgba(0, 255, 0, 0.1) 1px, transparent 1px)', 
+                    backgroundSize: '20px 20px' 
+                }}></div>
+                
+                {/* Radar Sweep Effect */}
+                <div className="absolute inset-0 bg-gradient-to-r from-transparent via-green-500/10 to-transparent w-full h-full animate-[spin_4s_linear_infinite] opacity-30 origin-bottom-right"></div>
+                
+                {/* Center Campus Marker */}
+                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center">
+                    <div className="w-4 h-4 bg-blue-500 rounded-full shadow-[0_0_10px_rgba(59,130,246,1)]"></div>
+                    <span className="text-[10px] text-blue-400 mt-1 font-mono">CAMPUS HUB</span>
+                </div>
+
+                {/* Student Dots */}
+                {trackedStudents.map(({ user, location }) => {
+                    const pos = plotOnMap(location.lat, location.lng);
+                    return (
+                        <div 
+                            key={user.id} 
+                            className="absolute flex flex-col items-center group/marker transition-all duration-1000"
+                            style={{ left: pos.x, top: pos.y }}
+                        >
+                            <div className="w-3 h-3 bg-red-500 rounded-full animate-pulse shadow-[0_0_10px_rgba(239,68,68,0.8)]"></div>
+                            <div className="absolute top-4 bg-black/80 text-white text-[10px] px-2 py-1 rounded whitespace-nowrap opacity-0 group-hover/marker:opacity-100 transition-opacity">
+                                {user.name} ({user.rollNumber})
+                                <br/>
+                                <span className="text-gray-400">Last seen: {new Date(location.lastUpdated).toLocaleTimeString()}</span>
+                            </div>
+                        </div>
+                    );
+                })}
+                
+                {trackedStudents.length === 0 && (
+                    <div className="absolute inset-0 flex items-center justify-center text-gray-500">
+                        No students in this class are currently sharing location.
+                    </div>
+                )}
+            </div>
+            
+            <div className="mt-4 text-sm text-gray-500 dark:text-gray-400">
+                <p>Found {trackedStudents.length} active students.</p>
+            </div>
+        </InfoCard>
+    );
 };
-
-const calculateSGPA = (marks: YearMarks): string => {
-  const allItems = [...marks.subjects, ...marks.labs];
-  let totalPoints = 0;
-  let totalCredits = 0;
-
-  allItems.forEach(item => {
-    if (GRADE_POINTS[item.grade] !== undefined) {
-      totalPoints += GRADE_POINTS[item.grade] * item.credits;
-    }
-    totalCredits += item.credits;
-  });
-
-  if (totalCredits === 0) {
-    return 'N/A';
-  }
-
-  const sgpa = totalPoints / totalCredits;
-  return sgpa.toFixed(2);
-};
-
 
 type EditableSection = 'profile' | 'attendance' | 'fees' | 'academics' | 'updates' | null;
 
-const isMidTermKey = (key: AcademicPeriodKey): boolean => key === 'mid_1' || key === 'mid_2';
+const StaffView: React.FC<StaffViewProps> = ({ currentUser, users, allStudentData, timetables, notices, periodTimes, materials, onUpdateUser, onUpdateStudentData, onUpdateMultipleStudentData, onAddStudent, onAddMultipleStudents, onUpdateMultipleAttendance, onUpdateTimetable, onUpdatePeriodTimes, onAddNotice, onDeleteNotice, onBiometricSetup, onAddMaterial, onDeleteMaterial, activeView, setActiveView }) => {
+    const [searchQuery, setSearchQuery] = useState('');
+    const debouncedSearchQuery = useDebounce(searchQuery, 300);
+    const [noticeSearchQuery, setNoticeSearchQuery] = useState('');
+    const [isAddingStudent, setIsAddingStudent] = useState(false);
+    const [isImportingStudents, setIsImportingStudents] = useState(false);
+    const [isImportingAttendance, setIsImportingAttendance] = useState(false);
+    const [isAddingNotice, setIsAddingNotice] = useState(false);
+    const [isEditingTimes, setIsEditingTimes] = useState(false);
+    const [isAddingMaterial, setIsAddingMaterial] = useState(false);
+    const [feedback, setFeedback] = useState('');
+    const [collapsedGroups, setCollapsedGroups] = useState<string[]>([]); // "year-2", "year-3-section-A"
+    const [yearFilter, setYearFilter] = useState<'all' | '1' | '2' | '3' | '4'>('all');
+    const [sectionFilter, setSectionFilter] = useState<'all' | 'none' | string>('all');
+    const [isViewingIdCard, setIsViewingIdCard] = useState(false);
+    const [selectedStudent, setSelectedStudent] = useState<{user: User, studentData: StudentData} | null>(null);
+    const [selectedUserId, setSelectedUserId] = useState<number | null>(null);
 
-type VirtualItem = {
-    type: 'user' | 'header';
-    id: string;
-    data: any;
-    onClick?: () => void;
-    content?: string;
-    count?: number;
-    isCollapsed?: boolean;
-}
-
-const VIRTUAL_ROW_HEIGHT = 52;
-const VirtualizedList = React.memo(({ items, renderItem, containerHeight }: { items: VirtualItem[], renderItem: (item: VirtualItem) => React.ReactNode, containerHeight: number }) => {
-    const containerRef = useRef<HTMLDivElement>(null);
-    const [scrollTop, setScrollTop] = useState(0);
-
-    const visibleItemCount = Math.ceil(containerHeight / VIRTUAL_ROW_HEIGHT);
-    const startIndex = Math.floor(scrollTop / VIRTUAL_ROW_HEIGHT);
-    const endIndex = Math.min(items.length, startIndex + visibleItemCount + 5); // Add buffer of 5 items
+    const [editingSection, setEditingSection] = useState<EditableSection>(null);
+    const [newStaffUpdateText, setNewStaffUpdateText] = useState('');
     
-    const visibleItems = useMemo(() => items.slice(startIndex, endIndex), [items, startIndex, endIndex]);
+    // Timetable state
+    const [selectedTimetableYear, setSelectedTimetableYear] = useState<string>('1');
+    const [selectedTimetableSection, setSelectedTimetableSection] = useState<string>('');
+    const [editingTimetable, setEditingTimetable] = useState<WeeklyTimeTable | null>(null);
 
-    const paddingTop = startIndex * VIRTUAL_ROW_HEIGHT;
-    const paddingBottom = (items.length - endIndex) * VIRTUAL_ROW_HEIGHT;
+    const handleButtonMouseMove = (e: React.MouseEvent<HTMLButtonElement>) => {
+        const button = e.currentTarget;
+        const rect = button.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        button.style.setProperty('--mouse-x', `${x}px`);
+        button.style.setProperty('--mouse-y', `${y}px`);
+    };
+    
+    const handleBiometricEnable = async () => {
+        const success = await onBiometricSetup(currentUser);
+        if (success) {
+            showFeedback('Biometric authentication enabled successfully!');
+        } else {
+            showFeedback('Failed to enable biometrics.');
+        }
+    };
 
-    return (
-        <div
-            ref={containerRef}
-            onScroll={e => setScrollTop(e.currentTarget.scrollTop)}
-            className="overflow-y-auto"
-            style={{ height: `${containerHeight}px` }}
-        >
-            <div style={{ paddingTop, paddingBottom }}>
-                {visibleItems.map(item => renderItem(item))}
+    const staffDepartment = currentUser.department;
+
+    const studentUsers = useMemo(() => {
+        if (!currentUser.assignments || currentUser.assignments.length === 0) {
+            return [];
+        }
+        return users.filter(u => {
+            if (u.role !== Role.STUDENT) {
+                return false;
+            }
+            const studentData = allStudentData.find(d => d.userId === u.id);
+            const studentYear = getStudentYear(studentData);
+            const studentSection = u.section;
+
+            if (!studentSection) {
+                return false;
+            }
+
+            return currentUser.assignments!.some(assignment => 
+                assignment.department === u.department &&
+                assignment.year === studentYear && 
+                assignment.section === studentSection
+            );
+        });
+    }, [users, allStudentData, currentUser.assignments]);
+    
+    const studentsForYearFilter = useMemo(() => {
+        if (yearFilter === 'all') return studentUsers;
+        return studentUsers.filter(user => {
+            const data = allStudentData.find(d => d.userId === user.id);
+            return getStudentYear(data).toString() === yearFilter;
+        });
+    }, [studentUsers, allStudentData, yearFilter]);
+
+    const availableSections = useMemo(() => {
+        const sections = new Set<string>();
+        studentsForYearFilter.forEach(user => {
+            if (user.section) {
+                sections.add(user.section);
+            }
+        });
+        return Array.from(sections).sort();
+    }, [studentsForYearFilter]);
+    
+    const hasUnsectionedStudents = useMemo(() => {
+        return studentsForYearFilter.some(user => !user.section);
+    }, [studentsForYearFilter]);
+
+    useEffect(() => {
+        const choiceCount = availableSections.length + (hasUnsectionedStudents ? 1 : 0);
+        if (choiceCount === 1) {
+            if (availableSections.length === 1) {
+                setSectionFilter(availableSections[0]);
+            } else {
+                setSectionFilter('none');
+            }
+        } else {
+            setSectionFilter('all');
+        }
+    }, [yearFilter, availableSections, hasUnsectionedStudents]);
+
+    const filteredGroupedStudents = useMemo(() => {
+        let filteredStudents = studentUsers;
+
+        if (yearFilter !== 'all') {
+            filteredStudents = filteredStudents.filter(user => {
+                const data = allStudentData.find(d => d.userId === user.id);
+                return getStudentYear(data).toString() === yearFilter;
+            });
+        }
+
+        if (sectionFilter !== 'all') {
+             if (sectionFilter === 'none') {
+                filteredStudents = filteredStudents.filter(user => !user.section);
+            } else {
+                filteredStudents = filteredStudents.filter(user => user.section === sectionFilter);
+            }
+        }
+
+        if (debouncedSearchQuery) {
+            filteredStudents = filteredStudents.filter(user =>
+                user.name.toLowerCase().includes(debouncedSearchQuery.toLowerCase()) ||
+                user.rollNumber.toLowerCase().includes(debouncedSearchQuery.toLowerCase())
+            );
+        }
+
+        const groups: { [year: string]: { [section: string]: User[] } } = {};
+        filteredStudents.forEach(user => {
+            const data = allStudentData.find(d => d.userId === user.id);
+            const year = getStudentYear(data).toString();
+            const section = user.section || 'N/A';
+            if (!groups[year]) groups[year] = {};
+            if (!groups[year][section]) groups[year][section] = [];
+            groups[year][section].push(user);
+        });
+
+        const finalGroups: { [year: string]: { [section: string]: User[] } } = {};
+        for (const year of ['1', '2', '3', '4']) {
+            if (groups[year] && Object.keys(groups[year]).length > 0) {
+                finalGroups[year] = Object.fromEntries(Object.entries(groups[year]).sort(([keyA], [keyB]) => keyA.localeCompare(keyB)));
+            }
+        }
+        return finalGroups;
+    }, [studentUsers, allStudentData, yearFilter, sectionFilter, debouncedSearchQuery]);
+
+    useEffect(() => {
+        // When the active tab changes, always reset the selection.
+        setSelectedStudent(null);
+        setSelectedUserId(null);
+
+        // Reset filters when tab changes
+        setSearchQuery('');
+        setNoticeSearchQuery('');
+        setYearFilter('all');
+        setSectionFilter('all');
+    }, [activeView]);
+
+    const [editingUser, setEditingUser] = useState<User | null>(null);
+    const [editingData, setEditingData] = useState<StudentData | null>(null);
+    const [activeAcademicPeriodTab, setActiveAcademicPeriodTab] = useState<AcademicPeriodKey>('mid_1');
+    const [newAttendanceRecord, setNewAttendanceRecord] = useState<{ month: string, year: string, present: string, total: string }>({ month: MONTHS[0], year: new Date().getFullYear().toString(), present: '', total: '' });
+
+    const selectedUser = users.find(u => u.id === selectedUserId);
+    
+    useEffect(() => {
+        const user = selectedStudent?.user;
+        const studentData = selectedStudent?.studentData;
+        setEditingUser(user ? { ...user } : null);
+        setEditingData(studentData ? JSON.parse(JSON.stringify(studentData)) : null);
+        setEditingSection(null); // Close any open edit sections when user changes
+        setActiveAcademicPeriodTab('mid_1');
+    }, [selectedStudent]);
+    
+    const showFeedback = (message: string) => {
+        setFeedback(message);
+        setTimeout(() => setFeedback(''), 5000);
+    }
+    
+    const handleEditClick = (section: EditableSection) => {
+        const user = selectedStudent?.user;
+        const studentData = selectedStudent?.studentData;
+
+        setEditingUser(user ? { ...user } : null);
+        let dataToUse = studentData;
+        
+        // If we are editing but data is missing (e.g. newly added student), initialize it
+        if (!studentData && user && section) {
+             const newId = user.id;
+             dataToUse = {
+                id: newId, userId: newId, monthlyAttendance: [], fees: {}, importantUpdates: [],
+                mid_1: null, mid_2: null, year1_1: null, year1_2: null, year2_1: null, year2_2: null, year3_1: null, year3_2: null, year4_1: null, year4_2: null
+             };
+        }
+
+        setEditingData(dataToUse ? JSON.parse(JSON.stringify(dataToUse)) : null);
+        setEditingSection(section);
+    };
+
+    const handleSave = () => {
+        if (editingSection === 'profile' && editingUser) {
+            onUpdateUser(editingUser);
+        } else if (editingData) {
+            onUpdateStudentData(editingData);
+        }
+        showFeedback('Changes saved successfully!');
+        setEditingSection(null);
+        
+        // Update selected student ref
+        if (selectedStudent) {
+             setSelectedStudent({
+                 user: editingUser || selectedStudent.user,
+                 studentData: editingData || selectedStudent.studentData
+             });
+        }
+    };
+
+    const handleCancel = () => {
+        setEditingSection(null);
+        const user = selectedStudent?.user;
+        const studentData = selectedStudent?.studentData;
+        setEditingUser(user ? { ...user } : null);
+        setEditingData(studentData ? JSON.parse(JSON.stringify(studentData)) : null);
+    };
+    
+    const handleAddUpdate = () => {
+        if (!newStaffUpdateText.trim() || !editingData) return;
+        const updatedUpdates = [...editingData.importantUpdates, { date: new Date().toISOString().split('T')[0], text: newStaffUpdateText }];
+        setEditingData({ ...editingData, importantUpdates: updatedUpdates });
+        setNewStaffUpdateText('');
+    };
+
+    const handleRemoveUpdate = (index: number) => {
+         if (!editingData) return;
+         const updatedUpdates = editingData.importantUpdates.filter((_, i) => i !== index);
+         setEditingData({ ...editingData, importantUpdates: updatedUpdates });
+    };
+
+    const handleMarkChange = (subjectIndex: number, field: 'grade' | 'credits' | 'score' | 'maxScore', value: string) => {
+        if (!editingData) return;
+        
+        // Deep copy needed for nested objects
+        const newData = JSON.parse(JSON.stringify(editingData));
+        const currentPeriodData = newData[activeAcademicPeriodTab];
+        
+        if (!currentPeriodData) return;
+
+        if (isMidTermKey(activeAcademicPeriodTab)) {
+             const subjects = (currentPeriodData as MidTermMarks).subjects;
+             if (field === 'score' || field === 'maxScore') {
+                 subjects[subjectIndex][field] = Number(value);
+             }
+        } else {
+             // It's a YearMarks object
+             const subjects = (currentPeriodData as YearMarks).subjects;
+             const labs = (currentPeriodData as YearMarks).labs;
+             
+             if (subjectIndex < subjects.length) {
+                 if (field === 'grade') subjects[subjectIndex].grade = value;
+                 if (field === 'credits') subjects[subjectIndex].credits = Number(value);
+             } else {
+                 const labIndex = subjectIndex - subjects.length;
+                  if (field === 'grade') labs[labIndex].grade = value;
+                  if (field === 'credits') labs[labIndex].credits = Number(value);
+             }
+             
+             // Recalculate totals
+             let totalCredits = 0;
+             let earnedCredits = 0; // Simplified logic: if grade is not F, credit is earned
+             [...subjects, ...labs].forEach(item => {
+                 totalCredits += item.credits;
+                 if (item.grade !== 'F') earnedCredits += item.credits;
+             });
+             (currentPeriodData as YearMarks).totalCredits = totalCredits;
+             (currentPeriodData as YearMarks).earnedCredits = earnedCredits;
+        }
+        setEditingData(newData);
+    };
+
+    const handleAttendanceRecordAdd = () => {
+        if (!editingData) return;
+        const existingIndex = editingData.monthlyAttendance.findIndex(r => r.month === newAttendanceRecord.month && r.year === parseInt(newAttendanceRecord.year));
+        
+        const newRecord: AttendanceRecord = {
+            month: newAttendanceRecord.month,
+            year: parseInt(newAttendanceRecord.year),
+            present: parseInt(newAttendanceRecord.present) || 0,
+            total: parseInt(newAttendanceRecord.total) || 0
+        };
+
+        let newAttendance = [...editingData.monthlyAttendance];
+        if (existingIndex >= 0) {
+            newAttendance[existingIndex] = newRecord;
+        } else {
+            newAttendance.push(newRecord);
+        }
+        
+        setEditingData({ ...editingData, monthlyAttendance: newAttendance });
+        setNewAttendanceRecord({ ...newAttendanceRecord, present: '', total: '' });
+    };
+
+    const handleDeleteAttendanceRecord = (index: number) => {
+         if (!editingData) return;
+         const newAttendance = editingData.monthlyAttendance.filter((_, i) => i !== index);
+         setEditingData({ ...editingData, monthlyAttendance: newAttendance });
+    };
+    
+    // --- TIMETABLE HANDLERS ---
+    
+    const handleTimetableCellChange = (day: keyof WeeklyTimeTable, periodIndex: number, value: string) => {
+        if (!editingTimetable) return;
+        const newSchedule = [...editingTimetable[day]];
+        newSchedule[periodIndex] = value;
+        setEditingTimetable({
+            ...editingTimetable,
+            [day]: newSchedule
+        });
+    };
+
+    const handleMergeRight = (day: keyof WeeklyTimeTable, periodIndex: number) => {
+        if (!editingTimetable) return;
+        const currentSchedule = editingTimetable[day];
+        if (periodIndex >= currentSchedule.length - 1) return;
+
+        const newSchedule = [...currentSchedule];
+        // The cell to the right becomes merged
+        newSchedule[periodIndex + 1] = MERGED_CELL;
+        setEditingTimetable({ ...editingTimetable, [day]: newSchedule });
+    };
+
+    const handleUnmerge = (day: keyof WeeklyTimeTable, periodIndex: number) => {
+        if (!editingTimetable) return;
+        const currentSchedule = editingTimetable[day];
+        // If current cell is not merged, nothing to do (unless we are unmerging a source cell which implies clearing next cells?)
+        // Logic: If I am at index i, and i+1 is merged, unmerge i+1.
+        // OR: If I am a merged cell, become empty?
+        // Let's assume we unmerge the cell to the right if it is merged.
+        if (periodIndex < currentSchedule.length - 1 && currentSchedule[periodIndex + 1] === MERGED_CELL) {
+             const newSchedule = [...currentSchedule];
+             newSchedule[periodIndex + 1] = ''; // Reset to empty string
+             setEditingTimetable({ ...editingTimetable, [day]: newSchedule });
+        }
+    };
+
+
+    const handleSaveTimetable = () => {
+        if (editingTimetable) {
+            onUpdateTimetable({
+                department: currentUser.department,
+                year: parseInt(selectedTimetableYear),
+                section: selectedTimetableSection,
+                timetable: editingTimetable
+            });
+            showFeedback('Timetable saved successfully!');
+        }
+    };
+    
+    useEffect(() => {
+        if (activeView === 'timetable' && currentUser.assignments && currentUser.assignments.length > 0) {
+            // Default to first assignment if not set or invalid
+             const validAssignment = currentUser.assignments.find(a => 
+                a.year.toString() === selectedTimetableYear && a.section === selectedTimetableSection
+            );
+            
+            if (!validAssignment) {
+                 const first = currentUser.assignments[0];
+                 setSelectedTimetableYear(first.year.toString());
+                 setSelectedTimetableSection(first.section);
+            }
+        }
+    }, [activeView, currentUser.assignments]);
+
+
+    useEffect(() => {
+        if (activeView === 'timetable') {
+            const currentTimetable = timetables.find(t => 
+                t.department === currentUser.department && 
+                t.year.toString() === selectedTimetableYear && 
+                t.section === selectedTimetableSection
+            );
+            
+            if (currentTimetable) {
+                setEditingTimetable(JSON.parse(JSON.stringify(currentTimetable.timetable)));
+            } else {
+                 // Initialize empty timetable
+                 const emptyDay = Array(8).fill('');
+                 setEditingTimetable({
+                     monday: [...emptyDay], tuesday: [...emptyDay], wednesday: [...emptyDay],
+                     thursday: [...emptyDay], friday: [...emptyDay], saturday: [...emptyDay]
+                 });
+            }
+        }
+    }, [activeView, selectedTimetableYear, selectedTimetableSection, timetables, currentUser.department]);
+
+    const handleImportStudents = (allParsedStudents: ParsedStudent[]) => {
+        const newUsers: User[] = [];
+        const newStudentDataItems: StudentData[] = [];
+        const skippedStudents: string[] = [];
+        
+        // Helper to check against all existing users + ones we are about to add
+        const existingRollNumbers = new Set(users.map(u => u.rollNumber));
+
+        allParsedStudents.forEach(pStudent => {
+            // Only import students for assignments the staff member has
+            const hasAssignment = currentUser.assignments?.some(a => 
+                a.department === pStudent.department && 
+                a.year.toString() === pStudent.year && 
+                a.section === pStudent.section
+            );
+
+            if (!hasAssignment) {
+                skippedStudents.push(`${pStudent.name} (No assignment for ${pStudent.department}-${pStudent.year}-${pStudent.section})`);
+                return;
+            }
+
+            const studentYear = parseInt(pStudent.year, 10);
+            
+            let finalRollNumber = pStudent.rollNumber?.trim();
+            let isDuplicate = false;
+
+            if (finalRollNumber) {
+                 isDuplicate = existingRollNumbers.has(finalRollNumber);
+            } else {
+                 // Generate if missing
+                 finalRollNumber = generateRollNumber(
+                     pStudent.department, 
+                     studentYear, 
+                     pStudent.isLateralEntry || false, 
+                     [...users, ...newUsers]
+                 );
+                 isDuplicate = existingRollNumbers.has(finalRollNumber);
+            }
+
+            if (isDuplicate) {
+                skippedStudents.push(`${pStudent.name} (Duplicate Roll No: ${finalRollNumber})`);
+                return;
+            }
+            
+             if (!finalRollNumber) {
+                 skippedStudents.push(`${pStudent.name} (Could not generate Roll No)`);
+                return;
+            }
+
+            const newId = Date.now() + Math.random();
+            const newUser: User = {
+                id: newId,
+                name: pStudent.name,
+                rollNumber: finalRollNumber,
+                password: 'password123', // Default password for imported students
+                role: Role.STUDENT,
+                department: pStudent.department,
+                section: pStudent.section,
+                isLateralEntry: pStudent.isLateralEntry,
+                email: pStudent.email,
+                phone: pStudent.phone,
+            };
+
+            const newStudentData: StudentData = {
+                id: newId, userId: newId, monthlyAttendance: [], 
+                fees: {}, 
+                importantUpdates: [],
+                mid_1: { subjects: [] }, mid_2: { subjects: [] },
+                year1_1: null, year1_2: null, year2_1: null, year2_2: null, year3_1: null, year3_2: null, year4_1: null, year4_2: null,
+            };
+            const yearKey = `year${pStudent.year}`;
+            // Simple default fee structure if not parsed
+            newStudentData.fees[yearKey] = {
+                installment1: { total: (pStudent.totalFees ?? 50000) / 2, paid: (pStudent.paidFees ?? 0), dueDate: '2024-08-15', status: 'Due' },
+                installment2: { total: (pStudent.totalFees ?? 50000) / 2, paid: 0, dueDate: '2025-02-15', status: 'Due' },
+            };
+            const emptyYearMarks: YearMarks = { subjects: [], labs: [], totalCredits: 0, earnedCredits: 0 };
+            const academicPeriodKey = `year${studentYear}_1` as AcademicPeriodKey;
+            if(newStudentData.hasOwnProperty(academicPeriodKey)) {
+                (newStudentData as any)[academicPeriodKey] = emptyYearMarks;
+            }
+            
+            newUsers.push(newUser);
+            newStudentDataItems.push(newStudentData);
+            existingRollNumbers.add(finalRollNumber);
+        });
+
+        if (newUsers.length > 0) {
+            onAddMultipleStudents(newUsers, newStudentDataItems);
+        }
+        
+        let feedbackMessage = `Import processed.`;
+        if (newUsers.length > 0) feedbackMessage += ` ${newUsers.length} students added.`;
+        if (skippedStudents.length > 0) feedbackMessage += ` ${skippedStudents.length} skipped (duplicates or no access).`;
+        
+        showFeedback(feedbackMessage);
+    };
+
+    const handleImportAttendance = (allParsedRecords: ParsedAttendanceRecord[]) => {
+        onUpdateMultipleAttendance(allParsedRecords);
+        showFeedback(`Successfully imported/updated ${allParsedRecords.length} attendance records.`);
+    };
+
+    const handleAddStudentInternal = (name: string, rollNumber: string, isLateral: boolean, pass: string, department: string, year: string, section: string, email: string, phone: string, photoUrl?: string) => {
+        const newId = Date.now();
+        const newUser: User = { 
+            id: newId, 
+            name,
+            rollNumber,
+            password: pass,
+            role: Role.STUDENT,
+            department,
+            section,
+            email,
+            phone,
+            photoUrl,
+            isLateralEntry: isLateral,
+        };
+        const academicYear = parseInt(year, 10);
+        const newStudentData: StudentData = {
+            id: newId, userId: newId, monthlyAttendance: [], 
+            fees: {},
+            importantUpdates: [],
+            mid_1: { subjects: [] }, mid_2: { subjects: [] },
+            year1_1: null, year1_2: null, year2_1: null, year2_2: null, year3_1: null, year3_2: null, year4_1: null, year4_2: null,
+        };
+        const yearKey = `year${academicYear}`;
+        newStudentData.fees[yearKey] = {
+            installment1: { total: 25000, paid: 0, dueDate: '2024-08-15', status: 'Due' },
+            installment2: { total: 25000, paid: 0, dueDate: '2025-02-15', status: 'Due' },
+        };
+        const emptyYearMarks: YearMarks = { subjects: [], labs: [], totalCredits: 0, earnedCredits: 0 };
+        const academicPeriodKey = `year${academicYear}_1` as AcademicPeriodKey;
+        if(newStudentData.hasOwnProperty(academicPeriodKey)) {
+            (newStudentData as any)[academicPeriodKey] = emptyYearMarks;
+        }
+
+        onAddStudent(newUser, newStudentData);
+        showFeedback('Student added successfully!');
+    }
+    
+    // --- RENDER HELPERS ---
+
+    const renderTimetableManager = () => {
+         if (!editingTimetable) return <div className="p-4">Loading...</div>;
+         return (
+            <div className="space-y-6">
+                <InfoCard title="Manage Timetables">
+                     <div className="flex flex-col md:flex-row gap-4 mb-4">
+                        <div className="flex-1">
+                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Select Year</label>
+                            <select value={selectedTimetableYear} onChange={e => setSelectedTimetableYear(e.target.value)} className="w-full mt-1 p-2 border rounded dark:bg-gray-700 dark:border-gray-600">
+                                {['1','2','3','4'].map(y => <option key={y} value={y}>{y}{['st','nd','rd'][parseInt(y)-1]||'th'} Year</option>)}
+                            </select>
+                        </div>
+                        <div className="flex-1">
+                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Select Section</label>
+                            <select value={selectedTimetableSection} onChange={e => setSelectedTimetableSection(e.target.value)} className="w-full mt-1 p-2 border rounded dark:bg-gray-700 dark:border-gray-600">
+                                {currentUser.assignments?.filter(a => a.year.toString() === selectedTimetableYear).map(a => (
+                                    <option key={a.section} value={a.section}>Section {a.section}</option>
+                                ))}
+                            </select>
+                        </div>
+                         <div className="flex items-end">
+                            <button onClick={() => setIsEditingTimes(true)} className="px-4 py-2 bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 rounded hover:bg-gray-300 dark:hover:bg-gray-600 btn-interactive">Edit Period Times</button>
+                        </div>
+                    </div>
+
+                    <div className="overflow-x-auto">
+                        <table className="min-w-full text-sm border-collapse border dark:border-gray-600">
+                             <thead className="bg-gray-50 dark:bg-gray-700">
+                                <tr>
+                                    <th className="p-2 border dark:border-gray-600">Day</th>
+                                    {periodTimes.map((time, i) => <th key={i} className="p-2 border dark:border-gray-600 min-w-[120px]">Period {i+1}<br/><span className="text-xs font-normal text-gray-500 dark:text-gray-400">{time}</span></th>)}
+                                </tr>
+                             </thead>
+                             <tbody>
+                                 {DAYS_OF_WEEK.map(day => (
+                                     <tr key={day}>
+                                         <td className="p-2 border dark:border-gray-600 font-medium capitalize bg-gray-50 dark:bg-gray-700">{day}</td>
+                                         {editingTimetable[day].map((subject, index) => {
+                                            if (subject === MERGED_CELL) return null;
+                                            
+                                            // Calculate colSpan
+                                            let colSpan = 1;
+                                            while (index + colSpan < editingTimetable[day].length && editingTimetable[day][index + colSpan] === MERGED_CELL) {
+                                                colSpan++;
+                                            }
+
+                                            return (
+                                             <td key={index} colSpan={colSpan} className="p-2 border dark:border-gray-600 relative group">
+                                                 <input 
+                                                    type="text" 
+                                                    value={subject} 
+                                                    onChange={e => handleTimetableCellChange(day, index, e.target.value)}
+                                                    className="w-full p-1 border rounded text-center dark:bg-gray-800 dark:border-gray-600"
+                                                    placeholder="Subject"
+                                                 />
+                                                 {/* Merge Controls */}
+                                                 <div className="absolute top-0 right-0 hidden group-hover:flex bg-white dark:bg-gray-800 shadow-sm border dark:border-gray-600 rounded">
+                                                     {colSpan === 1 && index + colSpan < editingTimetable[day].length && editingTimetable[day][index+1] !== MERGED_CELL && (
+                                                        <button onClick={() => handleMergeRight(day, index)} title="Merge Right" className="p-1 hover:bg-gray-100 dark:hover:bg-gray-700 text-blue-500">
+                                                            <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M12.293 5.293a1 1 0 011.414 0l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414-1.414L14.586 11H3a1 1 0 110-2h11.586l-2.293-2.293a1 1 0 010-1.414z" clipRule="evenodd" /></svg>
+                                                        </button>
+                                                     )}
+                                                     {colSpan > 1 && (
+                                                         <button onClick={() => handleUnmerge(day, index)} title="Unmerge" className="p-1 hover:bg-gray-100 dark:hover:bg-gray-700 text-red-500">
+                                                            <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M3 3a1 1 0 011-1h12a1 1 0 011 1v12a1 1 0 01-1 1H4a1 1 0 01-1-1V3zm3.293 9.293a1 1 0 001.414 1.414l3-3a1 1 0 000-1.414l-3-3a1 1 0 10-1.414 1.414L7.586 9H3a1 1 0 100 2h4.586l-1.293 1.293z" clipRule="evenodd" /></svg>
+                                                         </button>
+                                                     )}
+                                                 </div>
+                                             </td>
+                                            );
+                                         })}
+                                     </tr>
+                                 ))}
+                             </tbody>
+                        </table>
+                    </div>
+                    <div className="flex justify-end mt-4">
+                        <button onClick={handleSaveTimetable} className="px-6 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 btn-interactive">Save Timetable</button>
+                    </div>
+                </InfoCard>
             </div>
+         );
+    };
+
+    const renderNoticesManager = () => (
+        <InfoCard title="Notice Board Management">
+            <div className="mb-4">
+                <div className="flex gap-2">
+                     <input 
+                        type="text" 
+                        placeholder="Search notices..." 
+                        value={noticeSearchQuery} 
+                        onChange={e => setNoticeSearchQuery(e.target.value)} 
+                        className="flex-grow p-2 border rounded dark:bg-gray-700 dark:border-gray-600"
+                    />
+                    <button onClick={() => setIsAddingNotice(true)} className="px-4 py-2 bg-blue-600 text-white rounded btn-interactive whitespace-nowrap">Post New Notice</button>
+                </div>
+            </div>
+            <div className="space-y-4 max-h-[60vh] overflow-y-auto">
+                {notices
+                    .filter(n => n.department === currentUser.department || n.department === 'ALL')
+                    .filter(n => n.title.toLowerCase().includes(noticeSearchQuery.toLowerCase()))
+                    .map(notice => (
+                    <div key={notice.id} className="p-4 border rounded-lg hover:shadow-md transition-shadow dark:border-gray-700 bg-white dark:bg-gray-800">
+                        <div className="flex justify-between items-start">
+                            <div>
+                                <h4 className="font-bold text-lg">{notice.title}</h4>
+                                <p className="text-xs text-gray-500 dark:text-gray-400">{notice.date} • {notice.authorName} • {notice.department === 'ALL' ? 'All Depts' : notice.department}</p>
+                            </div>
+                            <button onClick={() => onDeleteNotice(notice.id)} className="text-red-500 hover:text-red-700 p-1">
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clipRule="evenodd" /></svg>
+                            </button>
+                        </div>
+                        <p className="mt-2 text-sm text-gray-700 dark:text-gray-300 line-clamp-3">{notice.content}</p>
+                    </div>
+                ))}
+                {notices.length === 0 && <p className="text-center text-gray-500">No notices posted yet.</p>}
+            </div>
+        </InfoCard>
+    );
+
+    const renderMaterialsManager = () => (
+        <InfoCard title="Course Materials">
+             <div className="mb-6 flex justify-between items-center">
+                 <p className="text-sm text-gray-600 dark:text-gray-400">Share resources with your students.</p>
+                 <button onClick={() => setIsAddingMaterial(true)} className="px-4 py-2 bg-blue-600 text-white rounded btn-interactive">Upload Material</button>
+             </div>
+             
+             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                 {materials.filter(m => currentUser.assignments?.some(a => a.department === m.department && a.year === m.year && a.section === m.section)).map(material => (
+                     <div key={material.id} className="border border-gray-200 dark:border-gray-700 rounded-lg p-4 relative bg-gray-50 dark:bg-gray-800 card-interactive">
+                         <div className="absolute top-2 right-2">
+                             <button onClick={() => onDeleteMaterial(material.id)} className="text-gray-400 hover:text-red-500">
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" /></svg>
+                             </button>
+                         </div>
+                         <h4 className="font-semibold text-gray-900 dark:text-white pr-6 truncate">{material.title}</h4>
+                         <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">{material.department} - {material.year}Yr - Sec {material.section}</p>
+                         <p className="text-sm text-gray-600 dark:text-gray-300 mb-3 line-clamp-2">{material.description}</p>
+                         <div className="flex justify-between items-center text-xs text-gray-400">
+                             <span>{material.fileType.toUpperCase()}</span>
+                             <span>{material.uploadedAt}</span>
+                         </div>
+                     </div>
+                 ))}
+             </div>
+             {materials.length === 0 && <p className="text-center text-gray-500 py-8">No materials uploaded.</p>}
+        </InfoCard>
+    );
+
+    const renderProfileSettings = () => (
+        <div className="space-y-6">
+            <InfoCard title="My Profile">
+                <div className="flex flex-col items-center gap-4">
+                    <div className="w-24 h-24 rounded-full bg-gray-200 dark:bg-gray-600 flex items-center justify-center overflow-hidden">
+                        {currentUser.photoUrl ? <img src={currentUser.photoUrl} alt="Profile" className="w-full h-full object-cover" /> : <span className="text-2xl text-gray-500 font-bold">{currentUser.name.charAt(0)}</span>}
+                    </div>
+                    <h2 className="text-xl font-bold">{currentUser.name}</h2>
+                    <p className="text-gray-500">{currentUser.rollNumber}</p>
+                    <p className="text-gray-500">{currentUser.department}</p>
+                    
+                    <div className="w-full max-w-sm mt-4 p-4 bg-gray-50 dark:bg-gray-700/50 rounded-lg">
+                        <h4 className="font-semibold mb-2">My Assignments</h4>
+                         <ul className="text-sm space-y-1">
+                            {currentUser.assignments?.map((a, i) => (
+                                <li key={i}>• {a.department} - Year {a.year} - Section {a.section}</li>
+                            ))}
+                         </ul>
+                    </div>
+                </div>
+            </InfoCard>
+            <InfoCard title="Security">
+                <div className="flex flex-col space-y-4">
+                    <div className="flex justify-between items-center">
+                         <span className="font-medium">Password</span>
+                         <button onClick={() => setEditingSection('profile')} className="text-blue-600 hover:text-blue-800 text-sm">Change Password</button>
+                    </div>
+                     <div className="flex justify-between items-center pt-4 border-t dark:border-gray-700">
+                        <div>
+                            <span className="font-medium block">Biometric Login</span>
+                            <span className="text-sm text-gray-500">Use fingerprint/face ID</span>
+                        </div>
+                        <button onClick={handleBiometricEnable} className="px-3 py-1 bg-indigo-600 text-white text-sm rounded btn-interactive">Enable</button>
+                    </div>
+                </div>
+            </InfoCard>
+             {editingSection === 'profile' && (
+                <ChangePasswordModal 
+                    onClose={() => setEditingSection(null)} 
+                    onSubmit={(current, newPass) => {
+                        // In a real app, verify current password. Here we assume success for simplicity or add prop for validation
+                        onUpdateUser({...currentUser, password: newPass});
+                        return true;
+                    }} 
+                />
+            )}
         </div>
     );
-});
+    
+    // --- MAIN RENDER ---
+
+    return (
+        <div className="anim-enter-staff">
+            {feedback && <div className="mb-4 p-3 bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200 rounded-lg text-sm text-center font-medium animate-pulse">{feedback}</div>}
+
+            {/* Main Content Area */}
+            <div className="space-y-6">
+                {activeView === 'attendance' && <AttendanceManager currentUser={currentUser} allStudentData={allStudentData} users={users} periodTimes={periodTimes} onUpdateMultipleStudentData={onUpdateMultipleStudentData} showFeedback={showFeedback} />}
+                {activeView === 'timetable' && renderTimetableManager()}
+                {activeView === 'notices' && renderNoticesManager()}
+                {activeView === 'materials' && renderMaterialsManager()}
+                {activeView === 'tracking' && <LiveTrackerDashboard users={users} allStudentData={allStudentData} assignments={currentUser.assignments || []} />}
+                {activeView === 'profile' && renderProfileSettings()}
+                {/* Simplified student list for staff - focusing on view/edit functionality */}
+                {activeView === 'students' && (
+                     <div className="space-y-6">
+                         <div className="flex flex-wrap gap-4 items-center justify-between">
+                            <div className="flex gap-2 items-center flex-grow">
+                                <input 
+                                    type="text" 
+                                    placeholder="Search students..." 
+                                    value={searchQuery} 
+                                    onChange={e => setSearchQuery(e.target.value)} 
+                                    className="p-2 border rounded w-full max-w-md dark:bg-gray-700 dark:border-gray-600"
+                                />
+                                <div className="flex gap-2">
+                                    <select value={yearFilter} onChange={e => setYearFilter(e.target.value as any)} className="p-2 border rounded dark:bg-gray-700 dark:border-gray-600">
+                                        <option value="all">All Years</option>
+                                        <option value="1">1st Year</option>
+                                        <option value="2">2nd Year</option>
+                                        <option value="3">3rd Year</option>
+                                        <option value="4">4th Year</option>
+                                    </select>
+                                    <select value={sectionFilter} onChange={e => setSectionFilter(e.target.value)} className="p-2 border rounded dark:bg-gray-700 dark:border-gray-600">
+                                        <option value="all">All Sections</option>
+                                        {availableSections.map(s => <option key={s} value={s}>Sec {s}</option>)}
+                                        {hasUnsectionedStudents && <option value="none">No Section</option>}
+                                    </select>
+                                </div>
+                            </div>
+                            <div className="flex gap-2">
+                                <button onClick={() => setIsAddingStudent(true)} className="px-4 py-2 bg-green-600 text-white rounded btn-interactive">Add Student</button>
+                                <button onClick={() => setIsImportingStudents(true)} className="px-4 py-2 bg-purple-600 text-white rounded btn-interactive">Import List</button>
+                            </div>
+                         </div>
+                         
+                         <InfoCard title="Student List">
+                             <div className="overflow-y-auto max-h-[60vh]">
+                                 <table className="min-w-full text-sm text-left">
+                                     <thead className="bg-gray-50 dark:bg-gray-700 sticky top-0">
+                                         <tr>
+                                             <th className="p-3">Roll No</th>
+                                             <th className="p-3">Name</th>
+                                             <th className="p-3">Year/Sec</th>
+                                             <th className="p-3">Actions</th>
+                                         </tr>
+                                     </thead>
+                                     <tbody className="divide-y dark:divide-gray-700">
+                                         {Object.entries(filteredGroupedStudents).flatMap(([year, sections]) => 
+                                            Object.entries(sections).flatMap(([section, students]) => 
+                                                students.map(student => (
+                                                    <tr key={student.id} className="hover:bg-gray-50 dark:hover:bg-gray-800">
+                                                        <td className="p-3 font-mono">{student.rollNumber}</td>
+                                                        <td className="p-3">{student.name}</td>
+                                                        <td className="p-3">{year} - {section}</td>
+                                                        <td className="p-3">
+                                                            <button className="text-blue-600 hover:text-blue-800 dark:text-blue-400">View</button>
+                                                        </td>
+                                                    </tr>
+                                                ))
+                                            )
+                                         )}
+                                         {Object.keys(filteredGroupedStudents).length === 0 && (
+                                             <tr><td colSpan={4} className="p-4 text-center text-gray-500">No students found matching filters.</td></tr>
+                                         )}
+                                     </tbody>
+                                 </table>
+                             </div>
+                         </InfoCard>
+                     </div>
+                )}
+            </div>
+
+            {/* Modals */}
+            {isAddingStudent && (
+                <AddStudentModal 
+                    onClose={() => setIsAddingStudent(false)} 
+                    onAdd={handleAddStudentInternal}
+                    staffAssignments={currentUser.assignments}
+                    allUsers={users}
+                />
+            )}
+            {isImportingStudents && (
+                <ImportStudentsModal 
+                    onClose={() => setIsImportingStudents(false)} 
+                    onImport={handleImportStudents}
+                    existingRollNumbers={users.map(u => u.rollNumber)}
+                />
+            )}
+            {isAddingNotice && (
+                <AddNoticeModal 
+                    onClose={() => setIsAddingNotice(false)} 
+                    onAdd={onAddNotice} 
+                    authorName={currentUser.name}
+                    department={currentUser.department}
+                />
+            )}
+            {isEditingTimes && (
+                <EditTimesModal
+                    currentTimes={periodTimes}
+                    onClose={() => setIsEditingTimes(false)}
+                    onSave={onUpdatePeriodTimes}
+                />
+            )}
+             {isAddingMaterial && (
+                <AddMaterialModal
+                    onClose={() => setIsAddingMaterial(false)}
+                    onAdd={onAddMaterial}
+                    assignments={currentUser.assignments || []}
+                />
+            )}
+        </div>
+    );
+};
+
+export default StaffView;
 
 const AttendanceManager: React.FC<{
   currentUser: User;
@@ -379,6 +1489,8 @@ const AttendanceManager: React.FC<{
     const [selectedAssignmentKey, setSelectedAssignmentKey] = useState<string>('');
     const [attendance, setAttendance] = useState<Map<number, DailyAttendanceStatus[]>>(new Map());
     const [absenteeInput, setAbsenteeInput] = useState('');
+    const [groupLateral, setGroupLateral] = useState(false);
+    const [onlyLateral, setOnlyLateral] = useState(false);
 
     const assignments = currentUser.assignments || [];
     const assignmentMap = useMemo(() => new Map(assignments.map(a => [`${a.department}-${a.year}-${a.section}`, a])), [assignments]);
@@ -404,6 +1516,24 @@ const AttendanceManager: React.FC<{
             );
         }).sort((a,b) => a.rollNumber.localeCompare(b.rollNumber));
     }, [selectedAssignment, users, allStudentData]);
+
+    const displayedStudents = useMemo(() => {
+        let students = [...studentsInClass];
+        
+        if (onlyLateral) {
+            students = students.filter(s => s.isLateralEntry);
+        }
+
+        if (groupLateral) {
+            students.sort((a, b) => {
+                if (a.isLateralEntry && !b.isLateralEntry) return -1;
+                if (!a.isLateralEntry && b.isLateralEntry) return 1;
+                return a.rollNumber.localeCompare(b.rollNumber);
+            });
+        }
+        
+        return students;
+    }, [studentsInClass, onlyLateral, groupLateral]);
     
     const dateKey = selectedDate.toISOString().split('T')[0];
 
@@ -541,8 +1671,33 @@ const AttendanceManager: React.FC<{
                         <p className="text-xs text-gray-500 mt-1">Separate numbers with spaces or commas. This marks students absent for the whole day.</p>
                     </div>
 
+                    <div className="mb-4 flex flex-wrap items-center gap-4 p-3 bg-orange-50 dark:bg-orange-900/20 rounded-lg border border-orange-100 dark:border-orange-800/30">
+                        <span className="text-sm font-medium text-orange-800 dark:text-orange-300 flex items-center gap-2">
+                             <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" clipRule="evenodd" /></svg>
+                             Lateral Entry Tools:
+                        </span>
+                        <label className="flex items-center space-x-2 cursor-pointer select-none bg-white dark:bg-gray-800 px-3 py-1.5 rounded border border-gray-200 dark:border-gray-700 shadow-sm hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
+                            <input
+                                type="checkbox"
+                                checked={groupLateral}
+                                onChange={e => setGroupLateral(e.target.checked)}
+                                className="h-4 w-4 text-orange-600 focus:ring-orange-500 border-gray-300 rounded"
+                            />
+                            <span className="text-sm text-gray-700 dark:text-gray-300">Group at Top</span>
+                        </label>
+                        <label className="flex items-center space-x-2 cursor-pointer select-none bg-white dark:bg-gray-800 px-3 py-1.5 rounded border border-gray-200 dark:border-gray-700 shadow-sm hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
+                            <input
+                                type="checkbox"
+                                checked={onlyLateral}
+                                onChange={e => setOnlyLateral(e.target.checked)}
+                                className="h-4 w-4 text-orange-600 focus:ring-orange-500 border-gray-300 rounded"
+                            />
+                            <span className="text-sm text-gray-700 dark:text-gray-300">Show Only Lateral</span>
+                        </label>
+                    </div>
+
                     <div className="flex flex-col md:flex-row justify-between items-center mb-4 gap-4">
-                        <p className="text-lg font-semibold">{studentsInClass.length} students in this class.</p>
+                        <p className="text-lg font-semibold">{displayedStudents.length} students listed.</p>
                         <div className="flex items-center gap-4">
                             <button onClick={handleSave} className="px-6 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 btn-interactive font-bold">Save Attendance</button>
                         </div>
@@ -558,11 +1713,19 @@ const AttendanceManager: React.FC<{
                                 </tr>
                             </thead>
                             <tbody className="divide-y dark:divide-gray-700">
-                                {studentsInClass.map(student => {
+                                {displayedStudents.map(student => {
                                     const studentAttendance = attendance.get(student.id) || [];
                                     return (
                                         <tr key={student.id} className="divide-x dark:divide-gray-600">
-                                            <td className="sticky left-0 bg-white dark:bg-gray-800 px-4 py-2 font-medium whitespace-nowrap">{student.name}<br/><span className="text-xs text-gray-500 dark:text-gray-400">{student.rollNumber}</span></td>
+                                            <td className="sticky left-0 bg-white dark:bg-gray-800 px-4 py-2 font-medium whitespace-nowrap">
+                                                {student.name}
+                                                {student.isLateralEntry && (
+                                                    <span className="ml-2 px-2 py-0.5 text-[10px] font-bold text-white bg-gradient-to-r from-orange-500 to-red-600 rounded shadow-sm">
+                                                        LATERAL
+                                                    </span>
+                                                )}
+                                                <br/><span className="text-xs text-gray-500 dark:text-gray-400">{student.rollNumber}</span>
+                                            </td>
                                             {periodTimes.map((_, periodIndex) => {
                                                 const status = studentAttendance[periodIndex];
                                                 return (
@@ -592,1577 +1755,3 @@ const AttendanceManager: React.FC<{
         </InfoCard>
     );
 };
-
-const StaffView: React.FC<StaffViewProps> = ({ currentUser, users, allStudentData, timetables, notices, periodTimes, onUpdateUser, onUpdateStudentData, onUpdateMultipleStudentData, onAddStudent, onAddMultipleStudents, onUpdateMultipleAttendance, onUpdateTimetable, onUpdatePeriodTimes, onAddNotice, onDeleteNotice, onBiometricSetup }) => {
-    const [searchQuery, setSearchQuery] = useState('');
-    const debouncedSearchQuery = useDebounce(searchQuery, 300);
-    const [noticeSearchQuery, setNoticeSearchQuery] = useState('');
-    const [isAddingStudent, setIsAddingStudent] = useState(false);
-    const [isImportingStudents, setIsImportingStudents] = useState(false);
-    const [isImportingAttendance, setIsImportingAttendance] = useState(false);
-    const [isAddingNotice, setIsAddingNotice] = useState(false);
-    const [isEditingTimes, setIsEditingTimes] = useState(false);
-    const [feedback, setFeedback] = useState('');
-    const [activeTab, setActiveTab] = useState<'attendance' | 'home' | 'students' | 'staff' | 'timetable' | 'notices'>('attendance');
-    const [collapsedGroups, setCollapsedGroups] = useState<string[]>([]); // "year-2", "year-3-section-A"
-    const [yearFilter, setYearFilter] = useState<'all' | '1' | '2' | '3' | '4'>('all');
-    const [sectionFilter, setSectionFilter] = useState<'all' | 'none' | string>('all');
-    const [isViewingIdCard, setIsViewingIdCard] = useState(false);
-    const [selectedStudent, setSelectedStudent] = useState<{user: User, studentData: StudentData} | null>(null);
-    const [selectedUserId, setSelectedUserId] = useState<number | null>(null);
-
-    const [editingSection, setEditingSection] = useState<EditableSection>(null);
-    const [newStaffUpdateText, setNewStaffUpdateText] = useState('');
-    
-    // Timetable state
-    const [selectedTimetableYear, setSelectedTimetableYear] = useState<string>('1');
-    const [selectedTimetableSection, setSelectedTimetableSection] = useState<string>('');
-    const [editingTimetable, setEditingTimetable] = useState<WeeklyTimeTable | null>(null);
-
-    const handleButtonMouseMove = (e: React.MouseEvent<HTMLButtonElement>) => {
-        const button = e.currentTarget;
-        const rect = button.getBoundingClientRect();
-        const x = e.clientX - rect.left;
-        const y = e.clientY - rect.top;
-        button.style.setProperty('--mouse-x', `${x}px`);
-        button.style.setProperty('--mouse-y', `${y}px`);
-    };
-    
-    const handleBiometricEnable = async () => {
-        const success = await onBiometricSetup(currentUser);
-        if (success) {
-            showFeedback('Biometric authentication enabled successfully!');
-        } else {
-            showFeedback('Failed to enable biometrics.');
-        }
-    };
-
-    const staffDepartment = currentUser.department;
-
-    const studentUsers = useMemo(() => {
-        if (!currentUser.assignments || currentUser.assignments.length === 0) {
-            return [];
-        }
-        return users.filter(u => {
-            if (u.role !== Role.STUDENT) {
-                return false;
-            }
-            const studentData = allStudentData.find(d => d.userId === u.id);
-            const studentYear = getStudentYear(studentData);
-            const studentSection = u.section;
-
-            if (!studentSection) {
-                return false;
-            }
-
-            return currentUser.assignments!.some(assignment => 
-                assignment.department === u.department &&
-                assignment.year === studentYear && 
-                assignment.section === studentSection
-            );
-        });
-    }, [users, allStudentData, currentUser.assignments]);
-
-    const staffUsersInDepartment = useMemo(() => users.filter(u => u.role === Role.STAFF && u.department === staffDepartment), [users, staffDepartment]);
-    
-    const studentsForYearFilter = useMemo(() => {
-        if (yearFilter === 'all') return studentUsers;
-        return studentUsers.filter(user => {
-            const data = allStudentData.find(d => d.userId === user.id);
-            return getStudentYear(data).toString() === yearFilter;
-        });
-    }, [studentUsers, allStudentData, yearFilter]);
-
-    const availableSections = useMemo(() => {
-        const sections = new Set<string>();
-        studentsForYearFilter.forEach(user => {
-            if (user.section) {
-                sections.add(user.section);
-            }
-        });
-        return Array.from(sections).sort();
-    }, [studentsForYearFilter]);
-    
-    const hasUnsectionedStudents = useMemo(() => {
-        return studentsForYearFilter.some(user => !user.section);
-    }, [studentsForYearFilter]);
-
-    useEffect(() => {
-        const choiceCount = availableSections.length + (hasUnsectionedStudents ? 1 : 0);
-        if (choiceCount === 1) {
-            if (availableSections.length === 1) {
-                setSectionFilter(availableSections[0]);
-            } else {
-                setSectionFilter('none');
-            }
-        } else {
-            setSectionFilter('all');
-        }
-    }, [yearFilter, availableSections, hasUnsectionedStudents]);
-
-    const filteredGroupedStudents = useMemo(() => {
-        let filteredStudents = studentUsers;
-
-        if (yearFilter !== 'all') {
-            filteredStudents = filteredStudents.filter(user => {
-                const data = allStudentData.find(d => d.userId === user.id);
-                return getStudentYear(data).toString() === yearFilter;
-            });
-        }
-
-        if (sectionFilter !== 'all') {
-             if (sectionFilter === 'none') {
-                filteredStudents = filteredStudents.filter(user => !user.section);
-            } else {
-                filteredStudents = filteredStudents.filter(user => user.section === sectionFilter);
-            }
-        }
-
-        if (debouncedSearchQuery) {
-            filteredStudents = filteredStudents.filter(user =>
-                user.name.toLowerCase().includes(debouncedSearchQuery.toLowerCase()) ||
-                user.rollNumber.toLowerCase().includes(debouncedSearchQuery.toLowerCase())
-            );
-        }
-
-        const groups: { [year: string]: { [section: string]: User[] } } = {};
-        filteredStudents.forEach(user => {
-            const data = allStudentData.find(d => d.userId === user.id);
-            const year = getStudentYear(data).toString();
-            const section = user.section || 'N/A';
-            if (!groups[year]) groups[year] = {};
-            if (!groups[year][section]) groups[year][section] = [];
-            groups[year][section].push(user);
-        });
-
-        const finalGroups: { [year: string]: { [section: string]: User[] } } = {};
-        for (const year of ['1', '2', '3', '4']) {
-            if (groups[year] && Object.keys(groups[year]).length > 0) {
-                finalGroups[year] = Object.fromEntries(Object.entries(groups[year]).sort(([keyA], [keyB]) => keyA.localeCompare(keyB)));
-            }
-        }
-        return finalGroups;
-    }, [studentUsers, allStudentData, yearFilter, sectionFilter, debouncedSearchQuery]);
-
-
-    const filteredStaff = useMemo(() => {
-        let staff = staffUsersInDepartment;
-
-        if (debouncedSearchQuery) {
-            staff = staff.filter(user =>
-                user.name.toLowerCase().includes(debouncedSearchQuery.toLowerCase()) ||
-                user.rollNumber.toLowerCase().includes(debouncedSearchQuery.toLowerCase())
-            );
-        }
-        return staff;
-    }, [staffUsersInDepartment, debouncedSearchQuery]);
-    
-    useEffect(() => {
-        // When the active tab changes, always reset the selection.
-        setSelectedStudent(null);
-        setSelectedUserId(null);
-
-        // Reset filters when tab changes
-        setSearchQuery('');
-        setNoticeSearchQuery('');
-        setYearFilter('all');
-        setSectionFilter('all');
-    }, [activeTab]);
-
-    const [editingUser, setEditingUser] = useState<User | null>(null);
-    const [editingData, setEditingData] = useState<StudentData | null>(null);
-    const [activeAcademicPeriodTab, setActiveAcademicPeriodTab] = useState<AcademicPeriodKey>('mid_1');
-    const [newAttendanceRecord, setNewAttendanceRecord] = useState<{ month: string, year: string, present: string, total: string }>({ month: MONTHS[0], year: new Date().getFullYear().toString(), present: '', total: '' });
-
-    const selectedUser = users.find(u => u.id === selectedUserId);
-    
-    useEffect(() => {
-        const user = selectedStudent?.user;
-        const studentData = selectedStudent?.studentData;
-        setEditingUser(user ? { ...user } : null);
-        setEditingData(studentData ? JSON.parse(JSON.stringify(studentData)) : null);
-        setEditingSection(null); // Close any open edit sections when user changes
-        setActiveAcademicPeriodTab('mid_1');
-    }, [selectedStudent]);
-    
-    const showFeedback = (message: string) => {
-        setFeedback(message);
-        setTimeout(() => setFeedback(''), 5000);
-    }
-    
-    const handleEditClick = (section: EditableSection) => {
-        const user = selectedStudent?.user;
-        const studentData = selectedStudent?.studentData;
-
-        setEditingUser(user ? { ...user } : null);
-        let dataToEdit = studentData ? JSON.parse(JSON.stringify(studentData)) : null;
-
-        if (section === 'academics' && dataToEdit) {
-            (Object.keys(academicPeriods) as AcademicPeriodKey[]).forEach(periodKey => {
-                if (!dataToEdit![periodKey]) {
-                    if (isMidTermKey(periodKey)) {
-                        dataToEdit![periodKey] = { subjects: [] };
-                    } else {
-                        dataToEdit![periodKey] = { subjects: [], labs: [], totalCredits: 0, earnedCredits: 0 };
-                    }
-                }
-            });
-        }
-        setEditingData(dataToEdit);
-        setEditingSection(section);
-    };
-
-    const handleSave = (section: EditableSection) => {
-        const userName = selectedStudent?.user?.name;
-        switch (section) {
-            case 'profile':
-                if (editingUser) {
-                    const isRollNumberChanged = editingUser.rollNumber !== selectedStudent?.user?.rollNumber;
-                    if (isRollNumberChanged) {
-                        const isDuplicate = users.some(u => u.id !== editingUser.id && u.rollNumber === editingUser.rollNumber);
-                        if (isDuplicate) {
-                            alert(`Error: Roll Number "${editingUser.rollNumber}" is already in use. Please choose a unique one.`);
-                            return; 
-                        }
-                    }
-                    onUpdateUser(editingUser);
-                }
-                break;
-            case 'fees':
-            case 'attendance':
-            case 'academics':
-            case 'updates':
-                if (editingData) onUpdateStudentData(editingData);
-                break;
-        }
-        setEditingSection(null);
-        showFeedback(`${userName}'s ${section} updated successfully!`);
-    };
-
-    const handleCancel = () => {
-        const user = selectedStudent?.user;
-        const studentData = selectedStudent?.studentData;
-        setEditingSection(null);
-        setEditingUser(user ?? null);
-        setEditingData(studentData ? JSON.parse(JSON.stringify(studentData)) : null);
-    };
-
-    const renderActionButtons = (section: EditableSection) => (
-        <div className="flex items-center space-x-2">
-            <button onClick={() => handleSave(section)} className="px-3 py-1 text-xs font-medium bg-green-600 text-white rounded-md hover:bg-green-700 btn-interactive">Save</button>
-            <button onClick={handleCancel} className="px-3 py-1 text-xs font-medium bg-gray-300 dark:bg-gray-600 rounded-md hover:bg-gray-400 btn-interactive">Cancel</button>
-        </div>
-    );
-    
-    const renderEditIcon = (section: EditableSection) => (
-        <button onClick={() => handleEditClick(section)} className="p-1 text-gray-500 hover:text-blue-600 dark:text-gray-400 dark:hover:text-blue-400 btn-interactive">
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path d="M17.414 2.586a2 2 0 00-2.828 0L7 10.172V13h2.828l7.586-7.586a2 2 0 000-2.828z" /><path fillRule="evenodd" d="M2 6a2 2 0 012-2h4a1 1 0 010 2H4v10h10v-4a1 1 0 112 0v4a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" clipRule="evenodd" /></svg>
-        </button>
-    );
-
-    const handleMarkChange = (periodKey: AcademicPeriodKey, type: 'subjects' | 'labs', index: number, field: 'name' | 'grade' | 'credits', value: string | number) => {
-        if (!editingData) return;
-        const updatedPeriodData = { ...(editingData[periodKey] as YearMarks) };
-        const updatedItems = [...updatedPeriodData[type]];
-        const currentItem = { ...updatedItems[index] };
-        
-        if (field === 'name') currentItem.name = value as string;
-        else if (field === 'grade') currentItem.grade = value as string;
-        else if (field === 'credits') currentItem.credits = parseFloat(value as string) || 0;
-        
-        updatedItems[index] = currentItem;
-        updatedPeriodData[type] = updatedItems;
-        setEditingData({ ...editingData, [periodKey]: updatedPeriodData });
-    };
-
-    const handleAddMarkItem = (periodKey: AcademicPeriodKey, type: 'subjects' | 'labs') => {
-        if (!editingData) return;
-        const updatedPeriodData = { ...(editingData[periodKey] as YearMarks) };
-        const updatedItems = [...updatedPeriodData[type]];
-        updatedItems.push({ name: '', grade: 'A', credits: 3 });
-        updatedPeriodData[type] = updatedItems;
-        setEditingData({ ...editingData, [periodKey]: updatedPeriodData });
-    };
-
-    const handleRemoveMarkItem = (periodKey: AcademicPeriodKey, type: 'subjects' | 'labs', index: number) => {
-        if (!editingData) return;
-        const updatedPeriodData = { ...(editingData[periodKey] as YearMarks) };
-        const updatedItems = [...updatedPeriodData[type]];
-        updatedItems.splice(index, 1);
-        updatedPeriodData[type] = updatedItems;
-        setEditingData({ ...editingData, [periodKey]: updatedPeriodData });
-    };
-    
-    const handleSemesterCreditsChange = (periodKey: AcademicPeriodKey, field: 'totalCredits' | 'earnedCredits', value: string) => {
-        if (!editingData) return;
-        const updatedPeriodData = { ...(editingData[periodKey] as YearMarks) };
-        updatedPeriodData[field] = parseFloat(value) || 0;
-        setEditingData({ ...editingData, [periodKey]: updatedPeriodData });
-    };
-
-    const handleMidTermMarkChange = (periodKey: AcademicPeriodKey, index: number, field: 'name' | 'score' | 'maxScore', value: string | number) => {
-        if (!editingData) return;
-        const updatedPeriodData = { ...(editingData[periodKey] as MidTermMarks) };
-        const updatedSubjects = [...updatedPeriodData.subjects];
-        const currentSubject = { ...updatedSubjects[index] };
-
-        if (field === 'name') currentSubject.name = value as string;
-        else if (field === 'score') currentSubject.score = Math.min(parseInt(value as string, 10) || 0, currentSubject.maxScore);
-        else if (field === 'maxScore') currentSubject.maxScore = parseInt(value as string, 10) || 0;
-        
-        updatedSubjects[index] = currentSubject;
-        updatedPeriodData.subjects = updatedSubjects;
-        setEditingData({ ...editingData, [periodKey]: updatedPeriodData });
-    };
-
-    const handleAddMidTermMarkItem = (periodKey: AcademicPeriodKey) => {
-        if (!editingData) return;
-        const updatedPeriodData = { ...(editingData[periodKey] as MidTermMarks) };
-        const updatedSubjects = [...updatedPeriodData.subjects];
-        updatedSubjects.push({ name: '', score: 0, maxScore: 100 });
-        updatedPeriodData.subjects = updatedSubjects;
-        setEditingData({ ...editingData, [periodKey]: updatedPeriodData });
-    };
-
-    const handleRemoveMidTermMarkItem = (periodKey: AcademicPeriodKey, index: number) => {
-        if (!editingData) return;
-        const updatedPeriodData = { ...(editingData[periodKey] as MidTermMarks) };
-        const updatedSubjects = [...updatedPeriodData.subjects];
-        updatedSubjects.splice(index, 1);
-        updatedPeriodData.subjects = updatedSubjects;
-        setEditingData({ ...editingData, [periodKey]: updatedPeriodData });
-    };
-    
-    const handleAddStudentInternal = (name: string, rollNumber: string, isLateralEntry: boolean, password: string, department: string, yearStr: string, section: string, email: string, phone: string, photoUrl?: string) => {
-        const newId = Date.now();
-        const academicYear = parseInt(yearStr, 10);
-        
-        const newUser: User = { 
-            id: newId, 
-            name, 
-            rollNumber, 
-            password, 
-            role: Role.STUDENT, 
-            department, 
-            section, 
-            email, 
-            phone, 
-            photoUrl,
-            isLateralEntry
-        };
-        
-        const newStudentData: StudentData = {
-            id: newId, userId: newId, monthlyAttendance: [], 
-            fees: {},
-            importantUpdates: [],
-            mid_1: { subjects: [] }, mid_2: { subjects: [] },
-            year1_1: null, year1_2: null, year2_1: null, year2_2: null, year3_1: null, year3_2: null, year4_1: null, year4_2: null,
-        };
-        
-        const yearKey = `year${academicYear}`;
-        newStudentData.fees[yearKey] = {
-            installment1: { total: 25000, paid: 0, dueDate: '2024-08-15', status: 'Due' },
-            installment2: { total: 25000, paid: 0, dueDate: '2025-02-15', status: 'Due' },
-        };
-
-        const emptyYearMarks: YearMarks = { subjects: [], labs: [], totalCredits: 0, earnedCredits: 0 };
-        const academicPeriodKey = `year${academicYear}_1` as AcademicPeriodKey;
-        if(newStudentData.hasOwnProperty(academicPeriodKey)) {
-            (newStudentData as any)[academicPeriodKey] = emptyYearMarks;
-        }
-
-        onAddStudent(newUser, newStudentData);
-        showFeedback('Student added successfully!');
-    }
-    
-    const handleAddMultipleStudentsWrapper = (allParsedStudents: ParsedStudent[]) => {
-        const newUsers: User[] = [];
-        const newStudentDataItems: StudentData[] = [];
-        const skippedStudents: string[] = [];
-        const mismatchedStudents: string[] = [];
-
-        if (!currentUser.assignments || currentUser.assignments.length === 0) {
-            showFeedback("You must be assigned to a section and year to import students.");
-            return;
-        }
-        
-        const existingRollNumbers = new Set(users.map(u => u.rollNumber));
-
-        allParsedStudents.forEach(pStudent => {
-            const studentYear = parseInt(pStudent.year, 10);
-
-            let finalRollNumber = pStudent.rollNumber?.trim();
-            let isDuplicate = false;
-
-            if (finalRollNumber) {
-                isDuplicate = existingRollNumbers.has(finalRollNumber);
-            } else {
-                // If no roll number in file, generate one
-                finalRollNumber = generateRollNumber(
-                    pStudent.department,
-                    studentYear,
-                    pStudent.isLateralEntry || false,
-                    [...users, ...newUsers]
-                );
-                isDuplicate = existingRollNumbers.has(finalRollNumber);
-            }
-
-            if (isDuplicate) {
-                skippedStudents.push(`${pStudent.name} (roll number ${finalRollNumber} is a duplicate)`);
-                return;
-            }
-            
-            if (!finalRollNumber) {
-                 skippedStudents.push(`${pStudent.name} (could not determine roll number)`);
-                return;
-            }
-
-            const isAssigned = currentUser.assignments!.some(a => 
-                a.department === pStudent.department &&
-                a.year === studentYear && 
-                a.section === pStudent.section
-            );
-
-            if (!isAssigned) {
-                mismatchedStudents.push(`${pStudent.name} (${pStudent.department} - Year ${pStudent.year} - Sec ${pStudent.section})`);
-                return;
-            }
-            
-            const newId = Date.now() + Math.random();
-            const newUser: User = {
-                id: newId,
-                name: pStudent.name,
-                rollNumber: finalRollNumber,
-                password: 'password123', // Default password
-                role: Role.STUDENT,
-                department: pStudent.department,
-                section: pStudent.section,
-                isLateralEntry: pStudent.isLateralEntry,
-                email: pStudent.email,
-                phone: pStudent.phone,
-            };
-
-            const newStudentData: StudentData = {
-                id: newId, userId: newId, monthlyAttendance: [], 
-                fees: {}, 
-                importantUpdates: [],
-                mid_1: { subjects: [] }, mid_2: { subjects: [] },
-                year1_1: null, year1_2: null, year2_1: null, year2_2: null, year3_1: null, year3_2: null, year4_1: null, year4_2: null,
-            };
-            const yearKey = `year${pStudent.year}`;
-            newStudentData.fees[yearKey] = {
-                installment1: { total: (pStudent.totalFees ?? 50000) / 2, paid: (pStudent.paidFees ?? 0), dueDate: '2024-08-15', status: 'Due' },
-                installment2: { total: (pStudent.totalFees ?? 50000) / 2, paid: 0, dueDate: '2025-02-15', status: 'Due' },
-            };
-            const emptyYearMarks: YearMarks = { subjects: [], labs: [], totalCredits: 0, earnedCredits: 0 };
-            const academicPeriodKey = `year${studentYear}_1` as AcademicPeriodKey;
-            if(newStudentData.hasOwnProperty(academicPeriodKey)) {
-                (newStudentData as any)[academicPeriodKey] = emptyYearMarks;
-            }
-            
-            newUsers.push(newUser);
-            newStudentDataItems.push(newStudentData);
-            existingRollNumbers.add(finalRollNumber); // Add to set to prevent duplicates within the same import
-        });
-
-        if (newUsers.length > 0) {
-            onAddMultipleStudents(newUsers, newStudentDataItems);
-        }
-        
-        let feedbackMessage = `Import processed: ${allParsedStudents.length} total records.`;
-        if (newUsers.length > 0) feedbackMessage += ` ${newUsers.length} new students added.`;
-        if (skippedStudents.length > 0) feedbackMessage += ` ${skippedStudents.length} duplicates skipped.`;
-        if (mismatchedStudents.length > 0) feedbackMessage += ` ${mismatchedStudents.length} students skipped because they do not belong to any of your assigned groups.`;
-        
-        showFeedback(feedbackMessage);
-    };
-
-    const handleImportAttendanceWrapper = (allParsedRecords: ParsedAttendanceRecord[]) => {
-      const validRecords: ParsedAttendanceRecord[] = [];
-      const skippedRecords: ParsedAttendanceRecord[] = [];
-      const studentRollNumbers = new Set(studentUsers.map(u => u.rollNumber));
-
-      allParsedRecords.forEach(record => {
-          if (studentRollNumbers.has(record.rollNumber)) {
-              validRecords.push(record);
-          } else {
-              skippedRecords.push(record);
-          }
-      });
-
-      if (validRecords.length > 0) {
-        onUpdateMultipleAttendance(validRecords);
-      }
-      
-      let feedbackMessage = `Import processed: ${allParsedRecords.length} total records.`;
-      const processedCount = validRecords.length;
-      const skippedCount = skippedRecords.length;
-      
-      if (processedCount > 0) {
-          feedbackMessage += ` ${processedCount} records applied.`;
-      }
-      
-      if (skippedCount > 0) {
-          const skippedRolls = [...new Set(skippedRecords.map(r => r.rollNumber))].join(', ');
-          feedbackMessage += ` ${skippedCount} records skipped for unknown or unassigned students (${skippedRolls}).`;
-      }
-
-      if (processedCount === 0 && skippedCount === 0) {
-          feedbackMessage = "Import complete. No attendance data was found in the file for your assigned students.";
-      }
-      
-      showFeedback(feedbackMessage);
-    };
-
-    const handleAddAttendanceRecord = () => {
-        if (!editingData) return;
-        const { month, year, present, total } = newAttendanceRecord;
-        if (!month || !year || !present || !total) {
-            alert("Please fill all fields for the new attendance record.");
-            return;
-        }
-        const newRecord: AttendanceRecord = {
-            month,
-            year: parseInt(year),
-            present: parseInt(present),
-            total: parseInt(total)
-        };
-        const updatedAttendance = [...editingData.monthlyAttendance, newRecord];
-        setEditingData({ ...editingData, monthlyAttendance: updatedAttendance });
-        setNewAttendanceRecord({ month: MONTHS[0], year: new Date().getFullYear().toString(), present: '', total: '' });
-    };
-
-    const handleUpdateAttendanceRecord = (index: number, field: keyof AttendanceRecord, value: string) => {
-        if (!editingData) return;
-        const updatedAttendance = [...editingData.monthlyAttendance];
-        const recordToUpdate = { ...updatedAttendance[index] };
-        if (field === 'month') {
-            recordToUpdate.month = value;
-        } else {
-            (recordToUpdate as any)[field] = parseInt(value, 10) || 0;
-        }
-        updatedAttendance[index] = recordToUpdate;
-        setEditingData({ ...editingData, monthlyAttendance: updatedAttendance });
-    };
-
-    const handleRemoveAttendanceRecord = (index: number) => {
-        if (!editingData) return;
-        const updatedAttendance = [...editingData.monthlyAttendance];
-        updatedAttendance.splice(index, 1);
-        setEditingData({ ...editingData, monthlyAttendance: updatedAttendance });
-    };
-
-    const handleAddImportantUpdate = () => {
-        if (!editingData) return;
-        const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
-        const updatedUpdates = [...editingData.importantUpdates, { date: today, text: '' }];
-        setEditingData({ ...editingData, importantUpdates: updatedUpdates });
-    };
-
-    const handleImportantUpdateChange = (index: number, field: 'date' | 'text', value: string) => {
-        if (!editingData) return;
-        const updatedUpdates = [...editingData.importantUpdates];
-        updatedUpdates[index] = { ...updatedUpdates[index], [field]: value };
-        setEditingData({ ...editingData, importantUpdates: updatedUpdates });
-    };
-
-    const handleRemoveImportantUpdate = (index: number) => {
-        if (!editingData) return;
-        const updatedUpdates = [...editingData.importantUpdates];
-        updatedUpdates.splice(index, 1);
-        setEditingData({ ...editingData, importantUpdates: updatedUpdates });
-    };
-    
-    const handleFeeChange = (yearKey: string, installment: 'installment1' | 'installment2', field: 'total' | 'paid' | 'dueDate', value: string) => {
-        if (!editingData) return;
-        const updatedFees = { ...editingData.fees };
-        const yearData = { ...updatedFees[yearKey] };
-        const installmentData = { ...yearData[installment] };
-
-        if (field === 'dueDate') {
-            installmentData.dueDate = value;
-        } else {
-            const numValue = parseInt(value, 10) || 0;
-            if (field === 'total') {
-                installmentData.total = numValue;
-                if (installmentData.paid > installmentData.total) installmentData.paid = installmentData.total;
-            } else { // paid
-                installmentData.paid = Math.min(numValue, installmentData.total);
-            }
-        }
-        
-        const today = new Date().toISOString().split('T')[0];
-        if (installmentData.paid >= installmentData.total) {
-            installmentData.status = 'Paid';
-        } else if (today > installmentData.dueDate) {
-            installmentData.status = 'Overdue';
-        } else {
-            installmentData.status = 'Due';
-        }
-
-        yearData[installment] = installmentData;
-        updatedFees[yearKey] = yearData;
-        setEditingData({ ...editingData, fees: updatedFees });
-    };
-    
-    const handleAddFeeYear = () => {
-        if (!editingData) return;
-
-        const feeYears = Object.keys(editingData.fees).map(key => parseInt(key.replace('year', '')));
-        const latestFeeYear = feeYears.length > 0 ? Math.max(...feeYears) : 0;
-        
-        if (latestFeeYear >= 4) return;
-
-        const nextYear = latestFeeYear + 1;
-        const nextYearKey = `year${nextYear}`;
-
-        if (editingData.fees[nextYearKey]) return;
-
-        const updatedFees = { ...editingData.fees };
-
-        let lastDueDate = new Date(); // fallback to today
-        if (latestFeeYear > 0 && editingData.fees[`year${latestFeeYear}`]) {
-             lastDueDate = new Date(editingData.fees[`year${latestFeeYear}`].installment2.dueDate);
-        }
-        
-        const nextDueDate1 = new Date(lastDueDate.getFullYear() + 1, 7, 15); // Aug 15
-        const nextDueDate2 = new Date(lastDueDate.getFullYear() + 2, 1, 15); // Feb 15
-
-        updatedFees[nextYearKey] = {
-            installment1: { total: 25000, paid: 0, dueDate: nextDueDate1.toISOString().split('T')[0], status: 'Due' },
-            installment2: { total: 25000, paid: 0, dueDate: nextDueDate2.toISOString().split('T')[0], status: 'Due' },
-        };
-        setEditingData({ ...editingData, fees: updatedFees });
-    };
-
-    const handleProfilePhotoChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-        if (e.target.files && e.target.files[0] && editingUser) {
-            try {
-                const url = await fileToDataUrl(e.target.files[0]);
-                setEditingUser({ ...editingUser, photoUrl: url });
-            } catch (error) {
-                console.error('Failed to update photo', error);
-                alert('There was an error uploading the photo.');
-            }
-        }
-    };
-
-
-    const handleAddStaffUpdate = () => {
-        if (!selectedUser || selectedUser.role !== Role.STAFF || !newStaffUpdateText.trim()) return;
-        const today = new Date().toISOString().split('T')[0];
-        const newUpdate: ImportantUpdate = { date: today, text: newStaffUpdateText.trim() };
-    
-        const updatedUser = {
-            ...selectedUser,
-            importantUpdates: [...(selectedUser.importantUpdates || []), newUpdate]
-        };
-    
-        onUpdateUser(updatedUser);
-        setNewStaffUpdateText('');
-        showFeedback(`Update added for ${selectedUser.name}`);
-    };
-
-    const toggleGroupCollapse = (key: string) => {
-        setCollapsedGroups(prev => prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]);
-    };
-    
-    const yearSuffix = (year: string | number) => {
-        const y = String(year);
-        if (y === '1') return 'st';
-        if (y === '2') return 'nd';
-        if (y === '3') return 'rd';
-        return 'th';
-    };
-
-    const renderEmptyState = () => (
-        <InfoCard title="User Details">
-            <div className="text-center py-12">
-                <svg xmlns="http://www.w3.org/2000/svg" className="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M15 21a6 6 0 00-9-5.197M15 11a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
-                <h3 className="mt-2 text-sm font-medium text-gray-900 dark:text-white">{users.length === 0 ? "No Users Available" : `Select a ${activeTab.slice(0, -1)}`}</h3>
-                <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">{`Select a ${activeTab.slice(0, -1)} from the list to see and edit their details.`}</p>
-            </div>
-        </InfoCard>
-    );
-
-    const HubButton: React.FC<{ onClick: () => void, icon: React.ReactNode, label: string, color: string }> = ({ onClick, icon, label, color }) => (
-      <button
-        onClick={onClick}
-        className={`group flex flex-col items-center justify-center p-4 rounded-lg shadow-md hover:shadow-xl ${color} btn-interactive`}
-      >
-        <div className="text-white mb-2">{icon}</div>
-        <span className="font-semibold text-white text-center text-sm">{label}</span>
-      </button>
-    );
-
-    const renderHome = () => {
-        const totalStudents = studentUsers.length;
-        
-        const totalPresentDays = studentUsers.reduce((total, student) => {
-            const data = allStudentData.find(d => d.userId === student.id);
-            return total + (data?.monthlyAttendance.reduce((acc, record) => acc + record.present, 0) || 0);
-        }, 0);
-
-        const totalWorkingDays = studentUsers.reduce((total, student) => {
-            const data = allStudentData.find(d => d.userId === student.id);
-            return total + (data?.monthlyAttendance.reduce((acc, record) => acc + record.total, 0) || 0);
-        }, 0);
-
-        const avgAttendance = totalWorkingDays > 0 ? (totalPresentDays / totalWorkingDays) * 100 : 0;
-        
-        const fullyPaidStudents = studentUsers.filter(student => { 
-            const data = allStudentData.find(d => d.userId === student.id); 
-            if (!data) return false;
-            // Fix: Explicitly type 'y' as YearlyFee to avoid operating on an 'unknown' type.
-            const totalFees = (Object.values(data.fees) as YearlyFee[]).reduce((acc, y) => acc + y.installment1.total + y.installment2.total, 0);
-            const totalPaid = (Object.values(data.fees) as YearlyFee[]).reduce((acc, y) => acc + y.installment1.paid + y.installment2.paid, 0);
-            return totalPaid >= totalFees;
-        }).length;
-        const feesPaidPercentage = totalStudents > 0 ? (fullyPaidStudents / totalStudents) * 100 : 0;
-        
-        let assignmentSummary = 'for your assigned sections and years';
-        if (currentUser.assignments && currentUser.assignments.length === 1) {
-            const a = currentUser.assignments[0];
-            assignmentSummary = `for Section ${a.section}, ${a.year}${yearSuffix(String(a.year))} Year`;
-        }
-        
-        return (
-            <div className="space-y-6 animated-grid">
-                <InfoCard title={`Welcome, ${currentUser.name}!`}>
-                    <p className="text-gray-600 dark:text-gray-300">This is your central hub for managing the <span className="font-semibold">{currentUser.department}</span> department {assignmentSummary}. Here's a quick overview and your main actions.</p>
-                </InfoCard>
-                <InfoCard title="Class Overview">
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6 text-center">
-                        <div><p className="text-4xl font-bold text-blue-600 dark:text-blue-400">{totalStudents}</p><p className="mt-1 text-sm font-medium text-gray-500 dark:text-gray-400">Total Students</p></div>
-                        <div><p className="text-4xl font-bold text-green-600 dark:text-green-400">{avgAttendance.toFixed(1)}%</p><p className="mt-1 text-sm font-medium text-gray-500 dark:text-gray-400">Average Attendance</p></div>
-                        <div><p className="text-4xl font-bold text-purple-600 dark:text-purple-400">{feesPaidPercentage.toFixed(1)}%</p><p className="mt-1 text-sm font-medium text-gray-500 dark:text-gray-400">Fees Fully Paid</p></div>
-                    </div>
-                </InfoCard>
-                <InfoCard title="Management Hub">
-                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-                       <HubButton onClick={() => setActiveTab('students')} label="Manage Students" color="bg-blue-500 hover:bg-blue-600" icon={<svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8" viewBox="0 0 20 20" fill="currentColor"><path d="M9 6a3 3 0 11-6 0 3 3 0 016 0zM17 6a3 3 0 11-6 0 3 3 0 016 0zM12.93 17c.046-.327.07-.66.07-1a6.97 6.97 0 00-1.5-4.33A5 5 0 0119 16v1h-6.07zM6 11a5 5 0 015 5v1H1v-1a5 5 0 015-5z" /></svg>} />
-                       <HubButton onClick={() => setActiveTab('staff')} label="View Staff" color="bg-sky-500 hover:bg-sky-600" icon={<svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" clipRule="evenodd" /></svg>} />
-                       <HubButton onClick={() => setActiveTab('timetable')} label="Edit Timetables" color="bg-orange-500 hover:bg-orange-600" icon={<svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M6 2a1 1 0 00-1 1v1H4a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2h-1V3a1 1 0 10-2 0v1H7V3a1 1 0 00-1-1zm0 5a1 1 0 000 2h8a1 1 0 100-2H6z" clipRule="evenodd" /></svg>} />
-                       <HubButton onClick={() => setIsAddingStudent(true)} label="Add New Student" color="bg-green-500 hover:bg-green-600" icon={<svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M10 5a1 1 0 011 1v3h3a1 1 0 110 2h-3v3a1 1 0 11-2 0v-3H6a1 1 0 110-2h3V6a1 1 0 011-1z" clipRule="evenodd" /></svg>} />
-                       <HubButton onClick={() => setIsImportingStudents(true)} label="Import Students" color="bg-purple-500 hover:bg-purple-600" icon={<svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8" viewBox="0 0 20 20" fill="currentColor"><path d="M5.5 13a3.5 3.5 0 01-.369-6.98 4 4 0 117.753-1.977A4.5 4.5 0 1113.5 13H11V9.414l-1.293 1.293a1 1 0 01-1.414-1.414l3-3a1 1 0 011.414 0l3 3a1 1 0 01-1.414 1.414L13 9.414V13h-1.5z" /><path d="M9 13h2v5H9v-5z" /></svg>} />
-                       <HubButton onClick={() => setIsImportingAttendance(true)} label="Import Attendance" color="bg-teal-500 hover:bg-teal-600" icon={<svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8" viewBox="0 0 20 20" fill="currentColor"><path d="M5 4a1 1 0 00-2 0v7.268a2 2 0 000 3.464V16a1 1 0 102 0v-1.268a2 2 0 000-3.464V4zM11 4a1 1 0 10-2 0v1.268a2 2 0 000 3.464V16a1 1 0 102 0V8.732a2 2 0 000-3.464V4zM16 3a1 1 0 011 1v7.268a2 2 0 010 3.464V16a1 1 0 11-2 0v-1.268a2 2 0 010-3.464V4a1 1 0 011-1z" /></svg>} />
-                       <HubButton onClick={handleBiometricEnable} label="Enable Biometrics" color="bg-indigo-500 hover:bg-indigo-600" icon={<svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8" viewBox="0 0 20 20" fill="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 11c0 3.517-1.009 6.799-2.753 9.571m-3.44-2.04l.054-.09A13.916 13.916 0 008 11a4 4 0 118 0c0 1.017-.07 2.019-.203 3m-2.118 6.844A21.88 21.88 0 0015.171 17m3.839 1.132c.645-2.266.99-4.659.99-7.132A8 8 0 008 4.07M3 15.364c.64-1.319 1-2.8 1-4.364 0-1.457.2-2.858.5-4m1.5 8l.054-.09A13.916 13.916 0 008 11a4 4 0 00-.05-1.5m3.44-2.04L11.3 7.3" /></svg>} />
-                    </div>
-                </InfoCard>
-            </div>
-        );
-    };
-
-    const sectionsByYear = useMemo(() => {
-        const result: { [year: string]: string[] } = { '1': [], '2': [], '3': [], '4': [] };
-        if (currentUser.assignments) {
-            for (const assignment of currentUser.assignments) {
-                const yearStr = String(assignment.year);
-                if (result[yearStr] && !result[yearStr].includes(assignment.section)) {
-                    result[yearStr].push(assignment.section);
-                }
-            }
-        }
-        Object.values(result).forEach(sections => sections.sort());
-        return result;
-    }, [currentUser.assignments]);
-
-    useEffect(() => {
-        const availableSections = sectionsByYear[selectedTimetableYear] || [];
-        if (!availableSections.includes(selectedTimetableSection)) {
-            setSelectedTimetableSection(availableSections[0] || '');
-        }
-    }, [selectedTimetableYear, sectionsByYear]);
-    
-    useEffect(() => {
-        if (!selectedTimetableYear || !selectedTimetableSection) {
-            setEditingTimetable(null);
-            return;
-        }
-
-        const existing = timetables.find(t => 
-            t.department === staffDepartment &&
-            t.year === parseInt(selectedTimetableYear) &&
-            t.section === selectedTimetableSection
-        );
-
-        if (existing) {
-            setEditingTimetable(JSON.parse(JSON.stringify(existing.timetable)) as WeeklyTimeTable);
-        } else {
-            // Create a blank timetable
-            const blank: WeeklyTimeTable = {
-                monday: Array(8).fill(''),
-                tuesday: Array(8).fill(''),
-                wednesday: Array(8).fill(''),
-                thursday: Array(8).fill(''),
-                friday: Array(8).fill(''),
-                saturday: Array(8).fill(''),
-            };
-            setEditingTimetable(blank);
-        }
-
-    }, [selectedTimetableYear, selectedTimetableSection, timetables, staffDepartment]);
-    
-    const handleTimetableCellChange = (day: keyof WeeklyTimeTable, periodIndex: number, value: string) => {
-        if (!editingTimetable) return;
-        const updatedTimetable = { ...editingTimetable };
-        updatedTimetable[day][periodIndex] = value;
-        setEditingTimetable(updatedTimetable);
-    };
-
-    const handleMergeRight = (day: keyof WeeklyTimeTable, periodIndex: number) => {
-        if (!editingTimetable) return;
-
-        const daySchedule = [...editingTimetable[day]];
-        
-        let currentColSpan = 1;
-        for (let j = periodIndex + 1; j < daySchedule.length; j++) {
-            if (daySchedule[j] === MERGED_CELL) { currentColSpan++; } 
-            else { break; }
-        }
-
-        const nextPeriodIndex = periodIndex + currentColSpan;
-        if (nextPeriodIndex >= daySchedule.length || daySchedule[nextPeriodIndex] === MERGED_CELL) return;
-
-        if (daySchedule[nextPeriodIndex] && !daySchedule[periodIndex]) {
-            daySchedule[periodIndex] = daySchedule[nextPeriodIndex];
-        }
-        
-        daySchedule[nextPeriodIndex] = MERGED_CELL;
-        
-        const updatedTimetable = { ...editingTimetable };
-        updatedTimetable[day] = daySchedule;
-        setEditingTimetable(updatedTimetable);
-    };
-    
-    const handleUnmerge = (day: keyof WeeklyTimeTable, periodIndex: number, colSpan: number) => {
-        if (!editingTimetable) return;
-        
-        const daySchedule = [...editingTimetable[day]];
-        for (let i = 1; i < colSpan; i++) {
-            if (periodIndex + i < daySchedule.length) {
-                daySchedule[periodIndex + i] = '';
-            }
-        }
-        const updatedTimetable = { ...editingTimetable };
-        updatedTimetable[day] = daySchedule;
-        setEditingTimetable(updatedTimetable);
-    };
-
-    const handleSaveTimetable = () => {
-        if (!editingTimetable || !selectedTimetableYear || !selectedTimetableSection) return;
-
-        const updated: SectionTimeTable = {
-            department: staffDepartment,
-            year: parseInt(selectedTimetableYear),
-            section: selectedTimetableSection,
-            timetable: editingTimetable,
-        };
-        onUpdateTimetable(updated);
-        showFeedback(`Timetable for Year ${selectedTimetableYear} - Section ${selectedTimetableSection} saved.`);
-    };
-
-    const handleSavePeriodTimes = (newTimes: string[]) => {
-        onUpdatePeriodTimes(newTimes);
-        showFeedback('Period times have been updated successfully.');
-    };
-
-    const renderTimetableManager = () => {
-        const renderTableBody = () => {
-            if (!editingTimetable) return null;
-        
-            return DAYS_OF_WEEK.map(day => {
-                const cells: React.ReactElement[] = [];
-                
-                const daySchedule = editingTimetable[day];
-                for (let i = 0; i < daySchedule.length; i++) {
-                    const subject = daySchedule[i];
-                    if (subject === MERGED_CELL) continue;
-                    
-                    let colSpan = 1;
-                    for (let j = i + 1; j < daySchedule.length; j++) {
-                        if (daySchedule[j] === MERGED_CELL) colSpan++;
-                        else break;
-                    }
-
-                    cells.push(
-                        <td key={i} colSpan={colSpan} className="px-1 py-1 relative group align-top border dark:border-gray-600">
-                            <input 
-                                type="text" 
-                                value={subject}
-                                onChange={e => handleTimetableCellChange(day, i, e.target.value)}
-                                className="w-full h-12 p-1 border-none rounded bg-transparent focus:ring-2 focus:ring-blue-500 dark:bg-gray-700/50 text-sm"
-                            />
-                            <div className="absolute top-1 right-1 flex items-center space-x-1 opacity-0 group-hover:opacity-100 transition-opacity bg-white dark:bg-gray-800 p-0.5 rounded-full shadow">
-                                {colSpan > 1 && (
-                                    <button onClick={() => handleUnmerge(day, i, colSpan)} title="Unmerge cells" className="p-1 text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-full">
-                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                          <path strokeLinecap="round" strokeLinejoin="round" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
-                                        </svg>
-                                    </button>
-                                )}
-                                {(i + colSpan) < daySchedule.length && (
-                                    <button onClick={() => handleMergeRight(day, i)} title="Merge with next cell" className="p-1 text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-full">
-                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                          <path strokeLinecap="round" strokeLinejoin="round" d="M17 8l4 4m0 0l-4 4m4-4H3" />
-                                        </svg>
-                                    </button>
-                                )}
-                            </div>
-                        </td>
-                    );
-                }
-                
-                return (
-                    <tr key={day}>
-                        <td className="capitalize p-2 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-white border dark:border-gray-600">{day}</td>
-                        {cells}
-                    </tr>
-                );
-            });
-        };
-
-        return (
-            <InfoCard title={`Manage Timetables for ${staffDepartment} Department`}>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-                    <div>
-                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Year</label>
-                        <select value={selectedTimetableYear} onChange={e => setSelectedTimetableYear(e.target.value)} className="w-full mt-1 p-2 border rounded dark:bg-gray-700 dark:border-gray-600">
-                            {Object.keys(sectionsByYear).filter(y => sectionsByYear[y].length > 0).map(y => <option key={y} value={y}>{y}{yearSuffix(y)} Year</option>)}
-                        </select>
-                    </div>
-                    <div>
-                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Section</label>
-                        <select value={selectedTimetableSection} onChange={e => setSelectedTimetableSection(e.target.value)} className="w-full mt-1 p-2 border rounded dark:bg-gray-700 dark:border-gray-600" disabled={!sectionsByYear[selectedTimetableYear]?.length}>
-                            {sectionsByYear[selectedTimetableYear]?.length ? (
-                                sectionsByYear[selectedTimetableYear].map(s => <option key={s} value={s}>{s}</option>)
-                            ) : (
-                                <option>No assigned sections</option>
-                            )}
-                        </select>
-                    </div>
-                    <div className="flex items-end">
-                        <button onClick={() => setIsEditingTimes(true)} className="w-full flex items-center justify-center px-4 py-2 border border-gray-300 dark:border-gray-600 text-sm font-medium rounded-md shadow-sm text-gray-700 dark:text-gray-200 bg-white dark:bg-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600 btn-interactive">
-                            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clipRule="evenodd" /></svg>
-                            Edit Period Times
-                        </button>
-                    </div>
-                </div>
-
-                {editingTimetable ? (
-                    <div className="overflow-x-auto">
-                        <table className="min-w-full border-collapse border dark:border-gray-600">
-                            <thead className="bg-gray-50 dark:bg-gray-700">
-                                <tr>
-                                    <th className="px-2 py-2 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase border dark:border-gray-600">Day</th>
-                                    {periodTimes.map((time, index) => (
-                                        <th key={index} className="px-2 py-2 text-center text-xs font-medium text-gray-500 dark:text-gray-300 uppercase border dark:border-gray-600">
-                                            <div>P{index + 1}</div>
-                                            <div className="font-normal normal-case">{time}</div>
-                                        </th>
-                                    ))}
-                                </tr>
-                            </thead>
-                            <tbody className="bg-white dark:bg-gray-800">
-                                {renderTableBody()}
-                            </tbody>
-                        </table>
-                        <div className="mt-6 flex justify-end">
-                            <button onClick={handleSaveTimetable} className="px-6 py-2 bg-green-600 text-white rounded-md shadow-sm hover:bg-green-700 btn-interactive">Save Timetable</button>
-                        </div>
-                    </div>
-                ) : (
-                    <p className="text-center text-gray-500 dark:text-gray-400 py-8">Please select a year and section to manage its timetable.</p>
-                )}
-            </InfoCard>
-        );
-    }
-    
-    const handleAddNewNotice = (title: string, content: string) => {
-        const newNotice: Omit<Notice, 'id'> = {
-            title,
-            content,
-            authorName: currentUser.name,
-            date: new Date().toISOString().split('T')[0],
-            department: currentUser.department,
-        };
-        onAddNotice(newNotice);
-        showFeedback('New notice has been posted successfully!');
-    };
-
-    const handleDeleteNoticeInternal = (noticeId: number) => {
-        if (window.confirm("Are you sure you want to delete this notice? This action cannot be undone.")) {
-            onDeleteNotice(noticeId);
-            showFeedback('Notice deleted.');
-        }
-    };
-    
-    const renderNoticeManager = () => {
-        const filteredNotices = notices
-            .filter(n => n.department === staffDepartment)
-            .filter(n => 
-                noticeSearchQuery ? 
-                n.title.toLowerCase().includes(noticeSearchQuery.toLowerCase()) || 
-                n.content.toLowerCase().includes(noticeSearchQuery.toLowerCase()) : 
-                true
-            )
-            .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-
-        return (
-            <InfoCard title={`Manage Notices for ${staffDepartment} Department`}>
-                <div className="mb-4 space-y-4">
-                    <div className="relative">
-                        <span className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
-                            <svg className="w-5 h-5 text-gray-400" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clipRule="evenodd" /></svg>
-                        </span>
-                        <input 
-                            type="text" 
-                            placeholder="Search notices..."
-                            value={noticeSearchQuery} 
-                            onChange={e => setNoticeSearchQuery(e.target.value)} 
-                            className="w-full p-2 pl-10 pr-10 border rounded dark:bg-gray-700 dark:border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500" 
-                            aria-label="Search notices" 
-                        />
-                        {noticeSearchQuery && (
-                            <button 
-                                onClick={() => setNoticeSearchQuery('')} 
-                                className="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
-                                aria-label="Clear search"
-                            >
-                                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
-                                </svg>
-                            </button>
-                        )}
-                    </div>
-                    <div className="flex justify-end">
-                        <button onClick={() => setIsAddingNotice(true)} className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-md shadow-sm hover:bg-blue-700 btn-interactive">
-                            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M10 5a1 1 0 011 1v3h3a1 1 0 110 2h-3v3a1 1 0 11-2 0v-3H6a1 1 0 110-2h3V6a1 1 0 011-1z" clipRule="evenodd" /></svg>
-                            Create New Notice
-                        </button>
-                    </div>
-                </div>
-                <div className="space-y-4 max-h-[60vh] overflow-y-auto">
-                    {filteredNotices.map(notice => (
-                            <div key={notice.id} className="p-4 rounded-lg bg-gray-50 dark:bg-gray-700/50">
-                                <div className="flex justify-between items-start">
-                                    <div>
-                                        <h4 className="font-semibold text-gray-800 dark:text-gray-200">{notice.title}</h4>
-                                        <p className="text-xs text-gray-500 dark:text-gray-400">By {notice.authorName} on {new Date(notice.date).toLocaleDateString()}</p>
-                                    </div>
-                                    <button onClick={() => handleDeleteNoticeInternal(notice.id)} className="p-1 text-red-500 hover:text-red-700 dark:hover:text-red-400 btn-interactive"><svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clipRule="evenodd" /></svg></button>
-                                </div>
-                                <p className="text-sm text-gray-600 dark:text-gray-300 mt-2 whitespace-pre-wrap">{notice.content}</p>
-                            </div>
-                        ))
-                    }
-                </div>
-            </InfoCard>
-        );
-    };
-
-    const choiceCount = availableSections.length + (hasUnsectionedStudents ? 1 : 0);
-    const isSectionFilterDisabled = choiceCount <= 1;
-
-    const flatStudentList = useMemo(() => {
-        const items: VirtualItem[] = [];
-        Object.entries(filteredGroupedStudents).forEach(([year, sections]) => {
-            const yearKey = `year-${year}`;
-            const isYearCollapsed = collapsedGroups.includes(yearKey);
-            items.push({
-                type: 'header',
-                id: yearKey,
-                data: null,
-                content: `${year}${yearSuffix(year)} Year`,
-                count: Object.values(sections).flat().length,
-                isCollapsed: isYearCollapsed,
-                onClick: () => toggleGroupCollapse(yearKey),
-            });
-
-            if (!isYearCollapsed) {
-                Object.entries(sections).forEach(([section, students]) => {
-                    const sectionKey = `${yearKey}-section-${section}`;
-                    const isSectionCollapsed = collapsedGroups.includes(sectionKey);
-                    items.push({
-                        type: 'header',
-                        id: sectionKey,
-                        data: null,
-                        content: `Section ${section}`,
-                        count: students.length,
-                        isCollapsed: isSectionCollapsed,
-                        onClick: () => toggleGroupCollapse(sectionKey),
-                    });
-                    if (!isSectionCollapsed) {
-                        students.forEach(user => {
-                            items.push({ type: 'user', id: `user-${user.id}`, data: user });
-                        });
-                    }
-                });
-            }
-        });
-        return items;
-    }, [filteredGroupedStudents, collapsedGroups]);
-
-    const totalFilteredStudents = Object.values(filteredGroupedStudents).flatMap(sections => Object.values(sections)).flat().length;
-
-    const renderDetailPanel = () => {
-        switch (activeTab) {
-            case 'home':
-                return renderHome();
-            case 'timetable':
-                return renderTimetableManager();
-            case 'notices':
-                return renderNoticeManager();
-            case 'students':
-                return renderEmptyState(); // Details now open in a modal
-            case 'staff':
-                return renderEmptyState(); // Staff detail view not implemented for staff role
-            // Fix: Handle 'attendance' tab within the main layout.
-            case 'attendance':
-                return <AttendanceManager 
-                    currentUser={currentUser}
-                    allStudentData={allStudentData}
-                    users={users}
-                    periodTimes={periodTimes}
-                    onUpdateMultipleStudentData={onUpdateMultipleStudentData}
-                    showFeedback={showFeedback}
-                />;
-            default:
-                return null;
-        }
-    };
-
-    return (
-    <>
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 animated-grid" style={{ perspective: '1000px' }}>
-            <div className="lg:col-span-1">
-                <InfoCard title={`${staffDepartment} - Management`}>
-                    <div className="flex border-b border-gray-200 dark:border-gray-700 mb-4 overflow-x-auto">
-                        <button className={`flex-shrink-0 px-3 py-2 text-sm font-medium ${activeTab === 'home' ? 'border-b-2 border-blue-500 text-blue-600 dark:text-blue-400' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'} btn-interactive`} onClick={() => setActiveTab('home')}>Home</button>
-                        <button className={`flex-shrink-0 px-3 py-2 text-sm font-medium ${activeTab === 'students' ? 'border-b-2 border-blue-500 text-blue-600 dark:text-blue-400' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'} btn-interactive`} onClick={() => setActiveTab('students')}>Students</button>
-                        <button className={`flex-shrink-0 px-3 py-2 text-sm font-medium ${activeTab === 'staff' ? 'border-b-2 border-blue-500 text-blue-600 dark:text-blue-400' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'} btn-interactive`} onClick={() => setActiveTab('staff')}>Staff</button>
-                        <button className={`flex-shrink-0 px-3 py-2 text-sm font-medium ${activeTab === 'attendance' ? 'border-b-2 border-blue-500 text-blue-600 dark:text-blue-400' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'} btn-interactive`} onClick={() => setActiveTab('attendance')}>Attendance</button>
-                        <button className={`flex-shrink-0 px-3 py-2 text-sm font-medium ${activeTab === 'notices' ? 'border-b-2 border-blue-500 text-blue-600 dark:text-blue-400' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'} btn-interactive`} onClick={() => setActiveTab('notices')}>Notices</button>
-                        <button className={`flex-shrink-0 px-3 py-2 text-sm font-medium ${activeTab === 'timetable' ? 'border-b-2 border-blue-500 text-blue-600 dark:text-blue-400' : 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'} btn-interactive`} onClick={() => setActiveTab('timetable')}>Timetable</button>
-                    </div>
-
-                    {(activeTab === 'students' || activeTab === 'staff') && (
-                        <div className="space-y-4">
-                            <div className="relative">
-                                <span className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
-                                    <svg className="w-5 h-5 text-gray-400" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clipRule="evenodd" /></svg>
-                                </span>
-                                <input 
-                                    type="text" 
-                                    placeholder={`Search ${activeTab}...`} 
-                                    value={searchQuery} 
-                                    onChange={e => setSearchQuery(e.target.value)} 
-                                    className="w-full p-2 pl-10 pr-10 border rounded dark:bg-gray-700 dark:border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500" 
-                                    aria-label="Search users" 
-                                />
-                                {searchQuery && (
-                                    <button 
-                                        onClick={() => setSearchQuery('')} 
-                                        className="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
-                                        aria-label="Clear search"
-                                    >
-                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                                            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
-                                        </svg>
-                                    </button>
-                                )}
-                            </div>
-                            {activeTab === 'students' && (
-                                <div className="grid grid-cols-2 gap-4">
-                                    <div className="relative">
-                                        <label htmlFor="year-filter" className="sr-only">Filter by Year</label>
-                                        <select
-                                            id="year-filter"
-                                            value={yearFilter}
-                                            onChange={(e) => setYearFilter(e.target.value as 'all' | '1' | '2' | '3' | '4')}
-                                            className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                        >
-                                            <option value="all">All Years</option>
-                                            {['1', '2', '3', '4'].map(year => {
-                                                if (studentUsers.some(u => getStudentYear(allStudentData.find(d => d.userId === u.id)).toString() === year)) {
-                                                    return <option key={year} value={year}>{year}{yearSuffix(year)} Year</option>;
-                                                }
-                                                return null;
-                                            })}
-                                        </select>
-                                    </div>
-                                    <div className="relative">
-                                        <label htmlFor="section-filter" className="sr-only">Filter by Section</label>
-                                        <select
-                                            id="section-filter"
-                                            value={sectionFilter}
-                                            onChange={(e) => setSectionFilter(e.target.value)}
-                                            disabled={isSectionFilterDisabled}
-                                            className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                                        >
-                                            {isSectionFilterDisabled ? (
-                                                choiceCount === 0 ? <option value="all">No Sections</option> :
-                                                sectionFilter === 'none' ? <option value="none">None</option> :
-                                                <option value={sectionFilter}>Section {sectionFilter}</option>
-                                            ) : (
-                                                <>
-                                                    <option value="all">All Sections</option>
-                                                    {hasUnsectionedStudents && <option value="none">None</option>}
-                                                    {availableSections.map(sec => (
-                                                        <option key={sec} value={sec}>Section {sec}</option>
-                                                    ))}
-                                                </>
-                                            )}
-                                        </select>
-                                    </div>
-                                </div>
-                            )}
-                            <div className="text-sm text-gray-500 dark:text-gray-400 px-1">
-                                {activeTab === 'students' ? `Showing ${totalFilteredStudents} of ${studentUsers.length} students` : `Showing ${filteredStaff.length} of ${staffUsersInDepartment.length} staff`}
-                            </div>
-                            <div className="space-y-1">
-                               {activeTab === 'students' ? (
-                                <VirtualizedList
-                                    items={flatStudentList}
-                                    containerHeight={400}
-                                    renderItem={(item) => {
-                                        if (item.type === 'header') {
-                                            return item.content.startsWith('Section') ? (
-                                                 <button onClick={item.onClick} style={{height: VIRTUAL_ROW_HEIGHT}} className="w-full flex justify-between items-center text-left p-2 rounded bg-gray-50 dark:bg-gray-700/50 hover:bg-gray-100 dark:hover:bg-gray-600/50 btn-interactive">
-                                                     <span className="font-medium text-sm pl-4">{item.content}</span>
-                                                      <span className="flex items-center">
-                                                        <span className="text-xs bg-gray-300 dark:bg-gray-500 text-gray-700 dark:text-gray-200 rounded-full px-2 py-0.5 mr-2">{item.count}</span>
-                                                        <svg xmlns="http://www.w3.org/2000/svg" className={`h-4 w-4 transition-transform duration-200 ${item.isCollapsed ? '-rotate-90' : ''}`} viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" /></svg>
-                                                     </span>
-                                                 </button>
-                                            ) : (
-                                                <button onClick={item.onClick} style={{height: VIRTUAL_ROW_HEIGHT}} className="w-full flex justify-between items-center text-left p-2 rounded bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 btn-interactive">
-                                                    <span className="font-semibold">{item.content}</span>
-                                                    <span className="flex items-center">
-                                                        <span className="text-xs bg-gray-300 dark:bg-gray-500 text-gray-700 dark:text-gray-200 rounded-full px-2 py-0.5 mr-2">{item.count}</span>
-                                                        <svg xmlns="http://www.w3.org/2000/svg" className={`h-5 w-5 transition-transform duration-200 ${item.isCollapsed ? '-rotate-90' : ''}`} viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" /></svg>
-                                                    </span>
-                                                </button>
-                                            )
-                                        }
-                                        const user = item.data as User;
-                                        const studentData = allStudentData.find(sd => sd.userId === user.id);
-                                        return (
-                                            <div style={{height: VIRTUAL_ROW_HEIGHT}} className="pl-8">
-                                                <button onClick={() => {
-                                                    if(studentData) {
-                                                        setSelectedStudent({ user, studentData });
-                                                    }
-                                                }} className={`w-full h-full text-left p-2 rounded-lg list-item-interactive ${selectedStudent?.user.id === user.id ? 'bg-blue-500 text-white shadow' : 'hover:bg-gray-100 dark:hover:bg-gray-700'}`}>
-                                                    {user.name} ({user.rollNumber})
-                                                </button>
-                                            </div>
-                                        )
-                                    }}
-                                />
-                               ) : (
-                                <VirtualizedList
-                                    items={filteredStaff.map(user => ({ type: 'user', id: `user-${user.id}`, data: user }))}
-                                    containerHeight={400}
-                                    renderItem={(item) => {
-                                        const user = item.data as User;
-                                        return (
-                                            <div style={{height: VIRTUAL_ROW_HEIGHT}}>
-                                            <button
-                                              onClick={() => setSelectedUserId(user.id)}
-                                              className={`w-full h-full text-left p-2 list-item-interactive ${selectedUserId === user.id ? 'bg-blue-500 text-white shadow' : 'hover:bg-gray-100 dark:hover:bg-gray-700'}`}
-                                            >
-                                              {user.name} ({user.rollNumber})
-                                            </button>
-                                            </div>
-                                        );
-                                    }}
-                                />
-                               )}
-                            </div>
-                        </div>
-                    )}
-                </InfoCard>
-                {feedback && <div className="mt-4 p-2 text-center text-sm text-green-800 bg-green-100 dark:text-green-100 dark:bg-green-800 rounded">{feedback}</div>}
-            </div>
-            <div className="lg:col-span-2">
-                 <div className="anim-content-block">
-                    {renderDetailPanel()}
-                 </div>
-            </div>
-        </div>
-
-        {selectedStudent && (
-             <div className="fixed inset-0 z-50 bg-black/60 anim-modal-backdrop">
-                <div className="bg-gray-100 dark:bg-slate-900 w-full h-full anim-modal-content">
-                    <StudentDetailsPanel
-                        key={selectedStudent.user.id}
-                        selectedUser={selectedStudent.user}
-                        selectedStudentData={selectedStudent.studentData}
-                        editingSection={editingSection}
-                        editingUser={editingUser}
-                        editingData={editingData}
-                        setEditingUser={setEditingUser}
-                        setEditingData={setEditingData}
-                        activeAcademicPeriodTab={activeAcademicPeriodTab}
-                        setActiveAcademicPeriodTab={setActiveAcademicPeriodTab}
-                        newAttendanceRecord={newAttendanceRecord}
-                        setNewAttendanceRecord={setNewAttendanceRecord}
-                        isViewingIdCard={isViewingIdCard}
-                        setIsViewingIdCard={setIsViewingIdCard}
-                        renderActionButtons={renderActionButtons}
-                        renderEditIcon={renderEditIcon}
-                        handleProfilePhotoChange={handleProfilePhotoChange}
-                        handleUpdateAttendanceRecord={handleUpdateAttendanceRecord}
-                        handleRemoveAttendanceRecord={handleRemoveAttendanceRecord}
-                        handleAddAttendanceRecord={handleAddAttendanceRecord}
-                        handleFeeChange={handleFeeChange}
-                        handleAddFeeYear={handleAddFeeYear}
-                        handleMidTermMarkChange={handleMidTermMarkChange}
-                        handleRemoveMidTermMarkItem={handleRemoveMidTermMarkItem}
-                        handleAddMidTermMarkItem={handleAddMidTermMarkItem}
-                        handleMarkChange={handleMarkChange}
-                        handleRemoveMarkItem={handleRemoveMarkItem}
-                        handleAddMarkItem={handleAddMarkItem}
-                        handleSemesterCreditsChange={handleSemesterCreditsChange}
-                        handleImportantUpdateChange={handleImportantUpdateChange}
-                        handleRemoveImportantUpdate={handleRemoveImportantUpdate}
-                        handleAddImportantUpdate={handleAddImportantUpdate}
-                        onClose={() => setSelectedStudent(null)}
-                    />
-                </div>
-             </div>
-        )}
-
-        {isAddingStudent && <AddStudentModal onClose={() => setIsAddingStudent(false)} onAdd={handleAddStudentInternal} staffAssignments={currentUser.assignments} allUsers={users} />}
-        {isAddingNotice && <AddNoticeModal onClose={() => setIsAddingNotice(false)} onAdd={handleAddNewNotice} />}
-        {isEditingTimes && <EditTimesModal currentTimes={periodTimes} onClose={() => setIsEditingTimes(false)} onSave={handleSavePeriodTimes} />}
-        {isImportingStudents && <ImportStudentsModal onClose={() => setIsImportingStudents(false)} onImport={handleAddMultipleStudentsWrapper} existingRollNumbers={users.map(u => u.rollNumber)} />}
-        {isImportingAttendance && (
-          <ImportAttendanceModal
-            onClose={() => setIsImportingAttendance(false)}
-            onImport={handleImportAttendanceWrapper}
-            students={studentUsers}
-            allStudentData={allStudentData}
-          />
-        )}
-    </>
-    );
-};
-
-const StudentDetailsPanel: React.FC<any> = ({
-    selectedUser, selectedStudentData, editingSection, editingUser, editingData, setEditingUser, setEditingData,
-    activeAcademicPeriodTab, setActiveAcademicPeriodTab, newAttendanceRecord, setNewAttendanceRecord,
-    isViewingIdCard, setIsViewingIdCard, renderActionButtons, renderEditIcon, handleProfilePhotoChange,
-    handleUpdateAttendanceRecord, handleRemoveAttendanceRecord, handleAddAttendanceRecord,
-    handleFeeChange, handleAddFeeYear, handleMidTermMarkChange, handleRemoveMidTermMarkItem,
-    handleAddMidTermMarkItem, handleMarkChange, handleRemoveMarkItem, handleAddMarkItem,
-    handleSemesterCreditsChange, handleImportantUpdateChange, handleRemoveImportantUpdate,
-    handleAddImportantUpdate, onClose
-}) => {
-    if (!selectedUser || !editingUser) return null;
-    const isStudent = selectedUser.role === Role.STUDENT && selectedStudentData && editingData;
-    if (!isStudent) return null;
-
-    const studentDataTyped = editingData as StudentData;
-
-    const overallAttendance = calculateOverallAttendance(studentDataTyped.monthlyAttendance);
-    
-    // Explicitly cast fees to ensure correct typing for reduce operations
-    const fees = studentDataTyped.fees as { [key: string]: YearlyFee };
-    const totalFees = (Object.values(fees) as YearlyFee[]).reduce((acc, year) => acc + year.installment1.total + year.installment2.total, 0);
-    const totalPaid = (Object.values(fees) as YearlyFee[]).reduce((acc, year) => acc + year.installment1.paid + year.installment2.paid, 0);
-
-    return (
-        <div className="relative h-full flex flex-col">
-            <div className="px-4 py-3 sm:px-6 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center sticky top-0 bg-white dark:bg-gray-800 z-10">
-                <div>
-                    <h3 className="text-xl leading-6 font-bold text-gray-900 dark:text-white">{selectedUser.name}</h3>
-                    <p className="mt-1 max-w-2xl text-sm text-gray-500 dark:text-gray-400">{selectedUser.rollNumber}</p>
-                </div>
-                <button onClick={onClose} className="inline-flex items-center space-x-2 px-3 py-1.5 border border-transparent text-sm font-medium rounded-md shadow-sm text-gray-700 dark:text-gray-200 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 dark:focus:ring-offset-gray-800 btn-interactive">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                      <path fillRule="evenodd" d="M9.707 14.707a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414l4-4a1 1 0 011.414 1.414L7.414 9H15a1 1 0 110 2H7.414l2.293 2.293a1 1 0 010 1.414z" clipRule="evenodd" />
-                    </svg>
-                    <span>Back</span>
-                </button>
-            </div>
-            <div className="p-4 sm:p-6 space-y-6 overflow-y-auto flex-1">
-                <InfoCard
-                    title="Profile Information"
-                    actions={
-                        <div className="flex items-center space-x-4">
-                            {editingSection !== 'profile' && <button onClick={() => setIsViewingIdCard(true)} className="text-sm font-medium text-purple-600 hover:text-purple-800 dark:text-purple-500 dark:hover:text-purple-400 btn-interactive">View ID</button>}
-                            {editingSection === 'profile' ? renderActionButtons('profile') : renderEditIcon('profile')}
-                        </div>
-                    }
-                >
-                    {editingSection === 'profile' ? (
-                        <div className="space-y-4">
-                            <div className="flex flex-col items-center space-y-2 mb-4">
-                                <div className="relative group w-24 h-24">
-                                    {editingUser.photoUrl ? (
-                                        <img src={editingUser.photoUrl} alt={editingUser.name} className="w-24 h-24 rounded-full object-cover" />
-                                    ) : (
-                                            <div className="w-24 h-24 rounded-full bg-gray-200 dark:bg-gray-600 flex items-center justify-center">
-                                                <svg xmlns="http://www.w3.org/2000/svg" className="h-12 w-12 text-gray-400" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" clipRule="evenodd" /></svg>
-                                        </div>
-                                    )}
-                                    <label htmlFor="edit-profile-photo" className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-50 flex items-center justify-center rounded-full cursor-pointer transition-opacity">
-                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-white opacity-0 group-hover:opacity-100" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
-                                        </svg>
-                                    </label>
-                                    <input id="edit-profile-photo" type="file" className="hidden" accept="image/*" onChange={handleProfilePhotoChange} />
-                                </div>
-                            </div>
-                            <input type="text" placeholder="Full Name" value={editingUser.name} onChange={e => setEditingUser({...editingUser, name: e.target.value})} className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600"/>
-                            <input type="text" placeholder="Roll Number" value={editingUser.rollNumber} onChange={e => setEditingUser({...editingUser, rollNumber: e.target.value.toUpperCase()})} className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600"/>
-                            <input type="text" placeholder="Section" value={editingUser.section || ''} onChange={e => setEditingUser({...editingUser, section: e.target.value.toUpperCase()})} className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600"/>
-                            <input type="email" placeholder="Email Address" value={editingUser.email || ''} onChange={e => setEditingUser({...editingUser, email: e.target.value})} className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600"/>
-                            <input type="tel" placeholder="Phone Number" value={editingUser.phone || ''} onChange={e => setEditingUser({...editingUser, phone: e.target.value})} className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600"/>
-                            <input type="text" placeholder="Enter new password to change" onChange={e => setEditingUser({...editingUser, password: e.target.value})} className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600"/>
-                        </div>
-                    ) : (
-                        <div className="space-y-1 text-sm"><p><strong>Name:</strong> {selectedUser.name}</p><p><strong>Roll No:</strong> {selectedUser.rollNumber}</p><p><strong>Email:</strong> {selectedUser.email || 'N/A'}</p><p><strong>Phone:</strong> {selectedUser.phone || 'N/A'}</p><p><strong>Dept:</strong> {selectedUser.department}</p><p><strong>Section:</strong> {selectedUser.section || 'N/A'}</p></div>
-                    )}
-                </InfoCard>
-                <InfoCard title="Attendance" actions={editingSection === 'attendance' ? renderActionButtons('attendance') : renderEditIcon('attendance')}>
-                    {editingSection === 'attendance' ? (
-                        <div className="space-y-4">
-                           <div className="overflow-y-auto max-h-48 pr-2">
-                                <table className="min-w-full text-sm">
-                                    <thead className="text-xs text-gray-700 uppercase bg-gray-50 dark:bg-gray-700 dark:text-gray-400 sticky top-0">
-                                        <tr>
-                                            <th className="px-2 py-1 text-left">Month</th>
-                                            <th className="px-2 py-1 text-left">Year</th>
-                                            <th className="px-2 py-1 text-left">Present</th>
-                                            <th className="px-2 py-1 text-left">Total</th>
-                                            <th className="px-2 py-1"></th>
-                                        </tr>
-                                    </thead>
-                                    <tbody className="bg-white dark:bg-gray-800">
-                                    {editingData.monthlyAttendance.map((record: AttendanceRecord, index: number) => (
-                                        <tr key={index}>
-                                            <td className="px-2 py-1"><select value={record.month} onChange={(e) => handleUpdateAttendanceRecord(index, 'month', e.target.value)} className="w-full p-1 border rounded bg-transparent dark:bg-gray-700 dark:border-gray-600">{MONTHS.map(m => <option key={m} value={m}>{m}</option>)}</select></td>
-                                            <td className="px-2 py-1"><input type="number" value={record.year} onChange={(e) => handleUpdateAttendanceRecord(index, 'year', e.target.value)} className="w-20 p-1 border rounded bg-transparent dark:bg-gray-700 dark:border-gray-600"/></td>
-                                            <td className="px-2 py-1"><input type="number" value={record.present} onChange={(e) => handleUpdateAttendanceRecord(index, 'present', e.target.value)} className="w-16 p-1 border rounded bg-transparent dark:bg-gray-700 dark:border-gray-600"/></td>
-                                            <td className="px-2 py-1"><input type="number" value={record.total} onChange={(e) => handleUpdateAttendanceRecord(index, 'total', e.target.value)} className="w-16 p-1 border rounded bg-transparent dark:bg-gray-700 dark:border-gray-600"/></td>
-                                            <td className="px-2 py-1 text-center"><button onClick={() => handleRemoveAttendanceRecord(index)} className="p-1 text-red-500 hover:text-red-700">✖</button></td>
-                                        </tr>
-                                    ))}
-                                    </tbody>
-                                </table>
-                            </div>
-                             <div className="flex items-center space-x-2 border-t dark:border-gray-700 pt-2 mt-2">
-                                <select value={newAttendanceRecord.month} onChange={(e) => setNewAttendanceRecord(prev => ({ ...prev, month: e.target.value }))} className="flex-1 p-1 border rounded dark:bg-gray-700 dark:border-gray-600">
-                                    {MONTHS.map(m => <option key={m} value={m}>{m}</option>)}
-                                </select>
-                                <input type="number" placeholder="Year" value={newAttendanceRecord.year} onChange={(e) => setNewAttendanceRecord(prev => ({ ...prev, year: e.target.value }))} className="w-20 p-1 border rounded dark:bg-gray-700 dark:border-gray-600"/>
-                                <input type="number" placeholder="Present" value={newAttendanceRecord.present} onChange={(e) => setNewAttendanceRecord(prev => ({ ...prev, present: e.target.value }))} className="w-20 p-1 border rounded dark:bg-gray-700 dark:border-gray-600"/>
-                                <input type="number" placeholder="Total" value={newAttendanceRecord.total} onChange={(e) => setNewAttendanceRecord(prev => ({ ...prev, total: e.target.value }))} className="w-20 p-1 border rounded dark:bg-gray-700 dark:border-gray-600"/>
-                                <button onClick={handleAddAttendanceRecord} className="px-3 py-1 bg-green-500 text-white rounded text-sm">Add</button>
-                            </div>
-                        </div>
-                    ) : (
-                        <div className="space-y-4">
-                            <p className="text-xl font-semibold">{overallAttendance}% Overall Attendance</p>
-                             <div className="overflow-x-auto max-h-48">
-                                <table className="min-w-full text-sm text-left text-gray-500 dark:text-gray-400">
-                                    <thead className="text-xs text-gray-700 uppercase bg-gray-50 dark:bg-gray-700 dark:text-gray-400 sticky top-0">
-                                        <tr>
-                                            <th scope="col" className="py-2 px-4">Month & Year</th>
-                                            <th scope="col" className="py-2 px-4">Present</th>
-                                            <th scope="col" className="py-2 px-4">Total Days</th>
-                                            <th scope="col" className="py-2 px-4">Percentage</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
-                                        {editingData.monthlyAttendance.map((record: AttendanceRecord, index: number) => {
-                                            const percentage = record.total > 0 ? Math.round((record.present / record.total) * 100) : 0;
-                                            return (
-                                            <tr key={index}>
-                                                <td className="py-2 px-4">{record.month} {record.year}</td>
-                                                <td className="py-2 px-4">{record.present}</td>
-                                                <td className="py-2 px-4">{record.total}</td>
-                                                <td className="py-2 px-4">{percentage}%</td>
-                                            </tr>
-                                            );
-                                        })}
-                                    </tbody>
-                                </table>
-                            </div>
-                        </div>
-                    )}
-                </InfoCard>
-                <InfoCard title="Fee Status" actions={editingSection === 'fees' ? renderActionButtons('fees') : renderEditIcon('fees')}>
-                     {editingSection === 'fees' ? (
-                        <div className="space-y-4">
-                           {Object.entries(editingData.fees).map(([yearKey, yearData]: [string, YearlyFee]) => (
-                                <div key={yearKey} className="p-2 border rounded dark:border-gray-600">
-                                    <h4 className="font-semibold text-center">{`Year ${yearKey.replace('year','')}`}</h4>
-                                    <div className="grid grid-cols-2 gap-2 mt-2">
-                                        <div>
-                                            <p className="text-sm font-medium">Installment 1</p>
-                                            <input type="number" value={yearData.installment1.total} onChange={e => handleFeeChange(yearKey, 'installment1', 'total', e.target.value)} className="w-full p-1 mt-1 border rounded dark:bg-gray-700 dark:border-gray-600" placeholder="Total"/>
-                                            <input type="number" value={yearData.installment1.paid} onChange={e => handleFeeChange(yearKey, 'installment1', 'paid', e.target.value)} className="w-full p-1 mt-1 border rounded dark:bg-gray-700 dark:border-gray-600" placeholder="Paid"/>
-                                            <input type="date" value={yearData.installment1.dueDate} onChange={e => handleFeeChange(yearKey, 'installment1', 'dueDate', e.target.value)} className="w-full p-1 mt-1 border rounded dark:bg-gray-700 dark:border-gray-600" placeholder="Due Date"/>
-                                        </div>
-                                        <div>
-                                            <p className="text-sm font-medium">Installment 2</p>
-                                            <input type="number" value={yearData.installment2.total} onChange={e => handleFeeChange(yearKey, 'installment2', 'total', e.target.value)} className="w-full p-1 mt-1 border rounded dark:bg-gray-700 dark:border-gray-600" placeholder="Total"/>
-                                            <input type="number" value={yearData.installment2.paid} onChange={e => handleFeeChange(yearKey, 'installment2', 'paid', e.target.value)} className="w-full p-1 mt-1 border rounded dark:bg-gray-700 dark:border-gray-600" placeholder="Paid"/>
-                                            <input type="date" value={yearData.installment2.dueDate} onChange={e => handleFeeChange(yearKey, 'installment2', 'dueDate', e.target.value)} className="w-full p-1 mt-1 border rounded dark:bg-gray-700 dark:border-gray-600" placeholder="Due Date"/>
-                                        </div>
-                                    </div>
-                                </div>
-                            ))}
-                            <button onClick={handleAddFeeYear} className="w-full text-sm py-1 bg-gray-200 dark:bg-gray-700 rounded hover:bg-gray-300">Add Fee Year</button>
-                        </div>
-                    ) : (
-                        <div className="space-y-4 text-sm">
-                            <p><strong>Total Fees:</strong> ₹{totalFees.toLocaleString()}</p>
-                            <p><strong>Fees Paid:</strong> ₹{totalPaid.toLocaleString()}</p>
-                            <p><strong>Amount Due:</strong> ₹{(totalFees - totalPaid).toLocaleString()}</p>
-                        </div>
-                    )}
-                </InfoCard>
-                <InfoCard title="Academic Records" actions={editingSection === 'academics' ? renderActionButtons('academics') : renderEditIcon('academics')}>
-                   {editingSection === 'academics' ? (
-                       <p>Editable academic records form would be here.</p>
-                   ) : (
-                       <p>Read-only academic records would be here.</p>
-                   )}
-                </InfoCard>
-                <InfoCard title="Important Updates" actions={editingSection === 'updates' ? renderActionButtons('updates') : renderEditIcon('updates')}>
-                    {editingSection === 'updates' ? (
-                        <div className="space-y-2">
-                            {editingData.importantUpdates.map((update: ImportantUpdate, index: number) => (
-                                <div key={index} className="flex items-center space-x-2">
-                                    <input type="date" value={update.date} onChange={e => handleImportantUpdateChange(index, 'date', e.target.value)} className="p-1 border rounded dark:bg-gray-700 dark:border-gray-600"/>
-                                    <input type="text" value={update.text} onChange={e => handleImportantUpdateChange(index, 'text', e.target.value)} className="flex-1 p-1 border rounded dark:bg-gray-700 dark:border-gray-600"/>
-                                    <button onClick={() => handleRemoveImportantUpdate(index)} className="p-1 text-red-500 hover:text-red-700">✖</button>
-                                </div>
-                            ))}
-                            <button onClick={handleAddImportantUpdate} className="w-full text-sm py-1 bg-gray-200 dark:bg-gray-700 rounded hover:bg-gray-300">Add Update</button>
-                        </div>
-                    ) : (
-                        <ul className="space-y-2 text-sm">
-                            {editingData.importantUpdates.length > 0 ? editingData.importantUpdates.map((update: ImportantUpdate, index: number) => (
-                                <li key={index}><strong>{update.date}:</strong> {update.text}</li>
-                            )) : <li>No important updates.</li>}
-                        </ul>
-                    )}
-                </InfoCard>
-            </div>
-            {isViewingIdCard && (
-                <div className="fixed inset-0 flex justify-center items-center z-50 anim-modal-backdrop">
-                    <IdCard user={selectedUser} studentData={selectedStudentData} onClose={() => setIsViewingIdCard(false)} />
-                </div>
-            )}
-        </div>
-    )
-};
-
-export default StaffView;

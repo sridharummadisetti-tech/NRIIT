@@ -1,6 +1,6 @@
 
 
-import React, { useState, FormEvent, useEffect, useRef } from 'react';
+import React, { useState, FormEvent, useEffect } from 'react';
 import { Role } from '../types';
 
 interface LoginProps {
@@ -81,9 +81,6 @@ const Login: React.FC<LoginProps> = ({ onLogin, onCheckEmailExists, onResetPassw
   const [forgotPasswordError, setForgotPasswordError] = useState('');
   const [isBiometricSupported, setIsBiometricSupported] = useState(false);
 
-  const cardRef = useRef<HTMLDivElement>(null);
-  const [cardStyle, setCardStyle] = useState({});
-
   useEffect(() => {
     // Check if WebAuthn is supported
     if (window.PublicKeyCredential && 
@@ -93,36 +90,6 @@ const Login: React.FC<LoginProps> = ({ onLogin, onCheckEmailExists, onResetPassw
         });
     }
   }, []);
-
-  const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
-      if (!cardRef.current) return;
-      const { left, top, width, height } = cardRef.current.getBoundingClientRect();
-      const x = e.clientX - left;
-      const y = e.clientY - top;
-      const rotateX = -((y - height / 2) / (height / 2)) * 8; // Max rotation 8deg
-      const rotateY = ((x - width / 2) / (width / 2)) * 8;
-      setCardStyle({
-          transform: `perspective(1000px) rotateX(${rotateX}deg) rotateY(${rotateY}deg) scale3d(1.05, 1.05, 1.05)`,
-          transition: 'transform 0.1s ease-out'
-      });
-  };
-
-  const handleMouseLeave = () => {
-      setCardStyle({
-          transform: 'perspective(1000px) rotateX(0) rotateY(0) scale3d(1, 1, 1)',
-          transition: 'transform 0.5s ease-in-out'
-      });
-  };
-
-  const handleButtonMouseMove = (e: React.MouseEvent<HTMLButtonElement>) => {
-    const button = e.currentTarget;
-    const rect = button.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-    button.style.setProperty('--mouse-x', `${x}px`);
-    button.style.setProperty('--mouse-y', `${y}px`);
-  };
-
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
@@ -301,8 +268,8 @@ const Login: React.FC<LoginProps> = ({ onLogin, onCheckEmailExists, onResetPassw
     return (
        <>
        <div className="relative flex items-center justify-center min-h-screen login-background">
-        <div onMouseMove={handleMouseMove} onMouseLeave={handleMouseLeave} className="relative z-10 w-full max-w-md" style={{ perspective: '1000px' }}>
-          <div ref={cardRef} style={{ ...cardStyle, transformStyle: 'preserve-3d' }} className="p-8 space-y-8 bg-white/80 dark:bg-gray-800/80 backdrop-blur-sm rounded-2xl shadow-lg transition-transform duration-500">
+        <div className="relative z-10 w-full max-w-md anim-enter-login">
+          <div className="p-8 space-y-8 bg-white/80 dark:bg-gray-800/80 backdrop-blur-sm rounded-2xl shadow-lg">
             <div className="text-center">
                 <div className="flex justify-center items-center mb-2">
                     <AnimatedNriitTitle colorClass={themes.ECE.logo} />
@@ -313,24 +280,21 @@ const Login: React.FC<LoginProps> = ({ onLogin, onCheckEmailExists, onResetPassw
             <div className="space-y-4 pt-4">
               <button
                 onClick={() => setSelectedRole(Role.STUDENT)}
-                onMouseMove={handleButtonMouseMove}
-                className={`group relative w-full flex items-center justify-center gap-3 py-4 px-4 border border-transparent text-lg font-medium rounded-md text-white focus:outline-none focus:ring-2 focus:ring-offset-2 dark:focus:ring-offset-gray-800 ${themes.ECE.button} lighting-button btn-interactive`}
+                className={`group relative w-full flex items-center justify-center gap-3 py-4 px-4 border border-transparent text-lg font-medium rounded-md text-white focus:outline-none focus:ring-2 focus:ring-offset-2 dark:focus:ring-offset-gray-800 ${themes.ECE.button} btn-interactive`}
               >
                   <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" viewBox="0 0 20 20" fill="currentColor"><path d="M10.394 2.08a1 1 0 00-.788 0l-7 3a1 1 0 000 1.84L9 9.48l8.705-4.247a1 1 0 00-.211-1.84l-7-3zM10 11.586l-7-3.419V14a1 1 0 001 1h12a1 1 0 001-1V8.167l-7 3.419z" /></svg>
                 Student
               </button>
               <button
                 onClick={() => setSelectedRole(Role.STAFF)}
-                onMouseMove={handleButtonMouseMove}
-                className={`group relative w-full flex items-center justify-center gap-3 py-4 px-4 border border-transparent text-lg font-medium rounded-md text-white focus:outline-none focus:ring-2 focus:ring-offset-2 dark:focus:ring-offset-gray-800 ${themes.EVT.button} lighting-button btn-interactive`}
+                className={`group relative w-full flex items-center justify-center gap-3 py-4 px-4 border border-transparent text-lg font-medium rounded-md text-white focus:outline-none focus:ring-2 focus:ring-offset-2 dark:focus:ring-offset-gray-800 ${themes.EVT.button} btn-interactive`}
               >
                   <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" clipRule="evenodd" /></svg>
                 Staff
               </button>
                <button
                 onClick={() => setSelectedRole(Role.SUPER_ADMIN)}
-                onMouseMove={handleButtonMouseMove}
-                className={`group relative w-full flex items-center justify-center gap-3 py-4 px-4 border border-transparent text-lg font-medium rounded-md text-white focus:outline-none focus:ring-2 focus:ring-offset-2 dark:focus:ring-offset-gray-800 ${themes.SUPER_ADMIN.button} lighting-button btn-interactive`}
+                className={`group relative w-full flex items-center justify-center gap-3 py-4 px-4 border border-transparent text-lg font-medium rounded-md text-white focus:outline-none focus:ring-2 focus:ring-offset-2 dark:focus:ring-offset-gray-800 ${themes.SUPER_ADMIN.button} btn-interactive`}
               >
                   <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M18 8a6 6 0 01-7.743 5.743L10 14l-1 1-1 1H6v2H2v-4l4.257-4.257A6 6 0 1118 8zm-6-4a1 1 0 100 2 1 1 0 000-2z" clipRule="evenodd" /></svg>
                 Portal Management
@@ -363,8 +327,8 @@ const Login: React.FC<LoginProps> = ({ onLogin, onCheckEmailExists, onResetPassw
   return (
     <>
     <div className="relative flex items-center justify-center min-h-screen login-background">
-      <div onMouseMove={handleMouseMove} onMouseLeave={handleMouseLeave} className="relative z-10 w-full max-w-md" style={{ perspective: '1000px' }}>
-        <div ref={cardRef} style={{ ...cardStyle, transformStyle: 'preserve-3d' }} className="p-8 space-y-6 bg-white/80 dark:bg-gray-800/80 backdrop-blur-sm rounded-2xl shadow-lg transition-transform duration-500">
+      <div className="relative z-10 w-full max-w-md anim-enter-login">
+        <div className="p-8 space-y-6 bg-white/80 dark:bg-gray-800/80 backdrop-blur-sm rounded-2xl shadow-lg">
           <div className="text-center">
               <div className="flex justify-center items-center mb-2">
                 <AnimatedNriitTitle colorClass={currentLoginTheme.logo} />
@@ -444,8 +408,7 @@ const Login: React.FC<LoginProps> = ({ onLogin, onCheckEmailExists, onResetPassw
             <div>
               <button
                 type="submit"
-                onMouseMove={handleButtonMouseMove}
-                className={`group relative w-full flex justify-center py-3 px-4 border border-transparent text-sm font-medium rounded-md text-white focus:outline-none focus:ring-2 focus:ring-offset-2 dark:focus:ring-offset-gray-800 ${currentLoginTheme.button} lighting-button btn-interactive`}
+                className={`group relative w-full flex justify-center py-3 px-4 border border-transparent text-sm font-medium rounded-md text-white focus:outline-none focus:ring-2 focus:ring-offset-2 dark:focus:ring-offset-gray-800 ${currentLoginTheme.button} btn-interactive`}
               >
                 Sign in
               </button>

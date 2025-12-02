@@ -1,5 +1,8 @@
 
 
+
+
+
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { User, Role, StudentData, YearMarks, ParsedStudent, AttendanceRecord, ImportantUpdate, MidTermMarks, MidTermSubject, FeeInstallment } from '../types';
 import InfoCard from './InfoCard';
@@ -111,7 +114,79 @@ interface SuperAdminViewProps {
   onUpdateStudentData: (data: StudentData) => void;
   onAddMultipleStudents: (newUsers: User[], newStudentDataItems: StudentData[]) => void;
   onBiometricSetup: (user: User) => Promise<boolean>;
+  onUpdatePassword: (userId: number, currentPass: string, newPass: string) => 'SUCCESS' | 'INCORRECT_PASSWORD';
 }
+
+const AdminChangePasswordModal: React.FC<{
+  onClose: () => void;
+  onSubmit: (currentPass: string, newPass: string) => 'SUCCESS' | 'INCORRECT_PASSWORD';
+}> = ({ onClose, onSubmit }) => {
+    const [currentPassword, setCurrentPassword] = useState('');
+    const [newPassword, setNewPassword] = useState('');
+    const [confirmPassword, setConfirmPassword] = useState('');
+    const [error, setError] = useState('');
+    const [success, setSuccess] = useState('');
+
+    const validateStrongPassword = (pass: string) => {
+        // At least 8 chars, 1 uppercase, 1 number, 1 special char (any non-word char or underscore)
+        const regex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[\W_]).{8,}$/;
+        return regex.test(pass);
+    };
+
+    const handleSubmit = () => {
+        setError('');
+        setSuccess('');
+        if (!currentPassword || !newPassword || !confirmPassword) {
+            setError('All fields are required.');
+            return;
+        }
+        if (newPassword !== confirmPassword) {
+            setError('New passwords do not match.');
+            return;
+        }
+        if (!validateStrongPassword(newPassword)) {
+            setError('Password must be at least 8 characters long and include an uppercase letter, a number, and a special character.');
+            return;
+        }
+        
+        const result = onSubmit(currentPassword, newPassword);
+        if (result === 'SUCCESS') {
+            setSuccess('Password updated successfully!');
+            setTimeout(onClose, 1500);
+        } else {
+            setError('The current password you entered is incorrect.');
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 flex justify-center items-center z-50 anim-modal-backdrop" onClick={onClose}>
+            <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-xl w-full max-w-md anim-modal-content" onClick={e => e.stopPropagation()}>
+                <h2 className="text-2xl font-bold mb-4 text-center">Change Admin Password</h2>
+                {error && <p className="text-red-500 text-sm text-center mb-4">{error}</p>}
+                {success && <p className="text-green-500 text-sm text-center mb-4">{success}</p>}
+                <div className="space-y-4">
+                    <div>
+                         <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Current Password</label>
+                        <input type="password" value={currentPassword} onChange={e => setCurrentPassword(e.target.value)} className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600" />
+                    </div>
+                    <div>
+                         <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">New Password</label>
+                        <input type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600" />
+                        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Min 8 chars, 1 uppercase, 1 number, 1 special char.</p>
+                    </div>
+                    <div>
+                         <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Confirm New Password</label>
+                        <input type="password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} className="w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600" />
+                    </div>
+                </div>
+                <div className="flex justify-end space-x-4 mt-6">
+                    <button onClick={onClose} className="px-4 py-2 bg-gray-300 dark:bg-gray-600 rounded btn-interactive">Cancel</button>
+                    <button onClick={handleSubmit} className="px-4 py-2 bg-red-600 text-white rounded btn-interactive">Update Password</button>
+                </div>
+            </div>
+        </div>
+    );
+};
 
 const DepartmentModal: React.FC<{
   department?: string;
@@ -510,6 +585,7 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
   onUpdateStudentData,
   onAddMultipleStudents,
   onBiometricSetup,
+  onUpdatePassword,
 }) => {
     const [activeTab, setActiveTab] = useState<'home' | 'departments' | 'staff' | 'students'>('home');
     const [searchQuery, setSearchQuery] = useState('');
@@ -534,6 +610,8 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
     const [editingSection, setEditingSection] = useState<EditableSection>(null);
     const [editingUser, setEditingUser] = useState<User | null>(null);
     const [editingData, setEditingData] = useState<StudentData | null>(null);
+    
+    const [isChangePasswordModalOpen, setIsChangePasswordModalOpen] = useState(false);
 
     const selectedUser = useMemo(() => users.find(u => u.id === selectedUserId), [users, selectedUserId]);
     const selectedStudentData = useMemo(() => studentData.find(sd => sd.userId === selectedUserId), [studentData, selectedUserId]);
@@ -780,7 +858,7 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                 id: newId,
                 name: pStudent.name,
                 rollNumber: finalRollNumber,
-                password: 'password123',
+                password: 'password123', // Default password for imported students
                 role: Role.STUDENT,
                 department: pStudent.department,
                 section: pStudent.section,
@@ -841,15 +919,26 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                     <div><p className="text-4xl font-bold text-purple-600 dark:text-purple-400">{allStudents.length}</p><p className="mt-1 text-sm font-medium text-gray-500 dark:text-gray-400">Total Students</p></div>
                 </div>
             </InfoCard>
-             <InfoCard title="Security">
-                <div className="flex items-center justify-between">
-                    <div>
-                        <h4 className="text-lg font-medium text-gray-900 dark:text-white">Biometric Login</h4>
-                        <p className="text-sm text-gray-500 dark:text-gray-400">Enable fingerprint or face ID for faster login.</p>
+             <InfoCard title="Security Settings">
+                 <div className="space-y-4">
+                    <div className="flex items-center justify-between pb-4 border-b dark:border-gray-700">
+                        <div>
+                            <h4 className="text-lg font-medium text-gray-900 dark:text-white">Biometric Login</h4>
+                            <p className="text-sm text-gray-500 dark:text-gray-400">Enable fingerprint or face ID for faster login.</p>
+                        </div>
+                        <button onClick={handleBiometricEnable} className="px-4 py-2 bg-indigo-600 text-white rounded btn-interactive">
+                            Enable Biometrics
+                        </button>
                     </div>
-                    <button onClick={handleBiometricEnable} className="px-4 py-2 bg-indigo-600 text-white rounded btn-interactive">
-                        Enable Biometrics
-                    </button>
+                     <div className="flex items-center justify-between">
+                        <div>
+                            <h4 className="text-lg font-medium text-gray-900 dark:text-white">Admin Password</h4>
+                            <p className="text-sm text-gray-500 dark:text-gray-400">Update the secure password for this admin account.</p>
+                        </div>
+                        <button onClick={() => setIsChangePasswordModalOpen(true)} className="px-4 py-2 bg-red-600 text-white rounded btn-interactive">
+                            Change Password
+                        </button>
+                    </div>
                 </div>
             </InfoCard>
         </div>
@@ -1005,7 +1094,7 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
     };
 
     return (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 animated-grid">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 anim-enter-admin">
             <div className="lg:col-span-1">
                 <InfoCard title="Portal Management">
                      <div className="flex border-b border-gray-200 dark:border-gray-700 mb-4 overflow-x-auto">
@@ -1074,6 +1163,12 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
             {isStaffModalOpen && <StaffModal staff={editingStaff} onClose={() => { setIsStaffModalOpen(false); setEditingStaff(undefined); }} onSave={handleSaveStaff} existingUsers={users} departments={departments} />}
             {isImportingStudents && <ImportStudentsModal onClose={() => setIsImportingStudents(false)} onImport={handleAddMultipleStudentsWrapper} existingRollNumbers={users.map(u => u.rollNumber)} />}
             {isAddingStudent && <AddStudentModal onClose={() => setIsAddingStudent(false)} onAdd={handleAddStudentInternal} departments={departments} allUsers={users} />}
+            {isChangePasswordModalOpen && (
+                <AdminChangePasswordModal 
+                    onClose={() => setIsChangePasswordModalOpen(false)} 
+                    onSubmit={(current, newPass) => onUpdatePassword(currentUser.id, current, newPass)} 
+                />
+            )}
         </div>
     );
 };

@@ -1,9 +1,8 @@
 
-
 import React, { useState } from 'react';
-import { User, Role, StudentData, ParsedAttendanceRecord, SectionTimeTable, Notice } from '../types';
+import { User, Role, StudentData, ParsedAttendanceRecord, SectionTimeTable, Notice, CourseMaterial, GeoLocation } from '../types';
 import StudentView, { StudentViewType } from './StudentView';
-import StaffView from './StaffView';
+import StaffView, { StaffViewType } from './StaffView';
 import Chatbot from './Chatbot';
 import { SuperAdminView } from './SuperAdminView';
 
@@ -16,6 +15,7 @@ interface DashboardProps {
   notices: Notice[];
   periodTimes: string[];
   departments: string[];
+  materials: CourseMaterial[];
   theme: 'light' | 'dark' | 'system';
   setTheme: React.Dispatch<React.SetStateAction<'light' | 'dark' | 'system'>>;
   onUpdateUser: (user: User) => void;
@@ -35,6 +35,10 @@ interface DashboardProps {
   onUpdateDepartment: (oldName: string, newName: string) => void;
   onDeleteDepartment: (departmentName: string) => void;
   onBiometricSetup: (user: User) => Promise<boolean>;
+  onAddMaterial: (material: CourseMaterial) => void;
+  onDeleteMaterial: (materialId: number) => void;
+  auditLogs: {timestamp: string, action: string, details: string}[];
+  onUpdateLocation: (userId: number, location: GeoLocation) => void;
 }
 
 // --- ICONS (moved from StudentView) ---
@@ -45,18 +49,24 @@ const AcademicCapIcon = () => <svg xmlns="http://www.w3.org/2000/svg" className=
 const CreditCardIcon = () => <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path d="M4 4a2 2 0 00-2 2v1h16V6a2 2 0 00-2-2H4z" /><path fillRule="evenodd" d="M18 9H2v5a2 2 0 002 2h12a2 2 0 002-2V9zM4 13a1 1 0 011-1h1a1 1 0 110 2H5a1 1 0 01-1-1zm5-1a1 1 0 100 2h1a1 1 0 100-2H9z" clipRule="evenodd" /></svg>;
 const BellIcon = () => <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path d="M10 2a6 6 0 00-6 6v3.586l-1.707 1.707A1 1 0 003 15h14a1 1 0 00.707-1.707L16 11.586V8a6 6 0 00-6-6zM10 18a3 3 0 01-3-3h6a3 3 0 01-3 3z" /></svg>;
 const UserCircleIcon = () => <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-6-3a2 2 0 11-4 0 2 2 0 014 0zm-2 4a5 5 0 00-4.546 2.916A5.986 5.986 0 0010 16a5.986 5.986 0 004.546-2.084A5 5 0 0012 11z" clipRule="evenodd" /></svg>;
+const DocumentIcon = () => <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clipRule="evenodd" /></svg>;
+const UsersIcon = () => <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path d="M13 6a3 3 0 11-6 0 3 3 0 016 0zM18 8a2 2 0 11-4 0 2 2 0 014 0zM14 15a4 4 0 00-8 0v3h8v-3zM6 8a2 2 0 11-4 0 2 2 0 014 0zM16 18v-3a5.972 5.972 0 00-.75-2.906A3.005 3.005 0 0119 15v3h-3zM4.75 12.094A5.973 5.973 0 004 15v3H1v-3a3 3 0 013.75-2.906z" /></svg>;
+const ClipboardCheckIcon = () => <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path d="M9 2a1 1 0 000 2h2a1 1 0 100-2H9z" /><path fillRule="evenodd" d="M4 5a2 2 0 012-2 3 3 0 003 3h2a3 3 0 003-3 2 2 0 012 2v11a2 2 0 01-2 2H6a2 2 0 01-2-2V5zm3 4a1 1 0 000 2h.01a1 1 0 100-2H7zm3 0a1 1 0 000 2h3a1 1 0 100-2h-3zm-3 4a1 1 0 100 2h.01a1 1 0 100-2H7zm3 0a1 1 0 100 2h3a1 1 0 100-2h-3z" clipRule="evenodd" /></svg>;
+const LocationIcon = () => <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M5.05 4.05a7 7 0 119.9 9.9L10 18.9l-4.95-4.95a7 7 0 010-9.9zM10 11a2 2 0 100-4 2 2 0 000 4z" clipRule="evenodd" /></svg>;
 
 
 const Dashboard: React.FC<DashboardProps> = (props) => {
   const { 
-      user, onLogout, users, studentData, timetables, notices, periodTimes, departments, theme, setTheme, 
+      user, onLogout, users, studentData, timetables, notices, periodTimes, departments, materials, theme, setTheme, 
       onUpdateUser, onDeleteUser, onUpdateStudentData, onUpdateMultipleStudentData, onAddStudent, onAddStaff, onAddMultipleStudents, 
       onUpdateMultipleAttendance, onUpdatePassword, onUpdateTimetable, onUpdatePeriodTimes, onAddNotice, 
-      onDeleteNotice, onAddDepartment, onUpdateDepartment, onDeleteDepartment, onBiometricSetup
+      onDeleteNotice, onAddDepartment, onUpdateDepartment, onDeleteDepartment, onBiometricSetup, onAddMaterial, onDeleteMaterial, auditLogs,
+      onUpdateLocation
   } = props;
 
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [activeStudentView, setActiveStudentView] = useState<StudentViewType>('overview');
+  const [activeStaffView, setActiveStaffView] = useState<StaffViewType>('attendance');
 
   const studentNavigationItems: { id: StudentViewType, label: string, icon: React.ReactNode }[] = [
     { id: 'overview', label: 'Overview', icon: <HomeIcon /> },
@@ -65,8 +75,20 @@ const Dashboard: React.FC<DashboardProps> = (props) => {
     { id: 'academics', label: 'Academics', icon: <AcademicCapIcon /> },
     { id: 'fees', label: 'Fees', icon: <CreditCardIcon /> },
     { id: 'timetable', label: 'Timetable', icon: <CalendarIcon /> },
+    { id: 'materials', label: 'Course Materials', icon: <DocumentIcon /> },
     { id: 'notices', label: 'Notice Board', icon: <BellIcon /> },
+    { id: 'live_location', label: 'Live Location', icon: <LocationIcon /> },
     { id: 'profile_settings', label: 'Profile & Settings', icon: <UserCircleIcon /> },
+  ];
+
+  const staffNavigationItems: { id: StaffViewType, label: string, icon: React.ReactNode }[] = [
+    { id: 'attendance', label: 'Attendance', icon: <ClipboardCheckIcon /> },
+    { id: 'timetable', label: 'Timetables', icon: <CalendarIcon /> },
+    { id: 'notices', label: 'Notice Board', icon: <BellIcon /> },
+    { id: 'materials', label: 'Materials', icon: <DocumentIcon /> },
+    { id: 'students', label: 'Students', icon: <UsersIcon /> },
+    { id: 'tracking', label: 'Student Tracking', icon: <LocationIcon /> },
+    { id: 'profile', label: 'My Profile', icon: <UserCircleIcon /> },
   ];
 
   const getStudentDataForUser = (userId: number): StudentData | undefined => {
@@ -90,11 +112,13 @@ const Dashboard: React.FC<DashboardProps> = (props) => {
             timetables={timetables} 
             notices={notices}
             periodTimes={periodTimes}
+            materials={materials}
             onUpdatePassword={onUpdatePassword}
             onUpdateUser={onUpdateUser}
             activeView={activeStudentView}
             setActiveView={setActiveStudentView}
             onBiometricSetup={onBiometricSetup}
+            onUpdateLocation={onUpdateLocation}
         />;
       case Role.STAFF:
         return <StaffView 
@@ -104,6 +128,7 @@ const Dashboard: React.FC<DashboardProps> = (props) => {
             timetables={timetables}
             notices={notices}
             periodTimes={periodTimes}
+            materials={materials}
             onUpdateUser={onUpdateUser}
             onUpdateStudentData={onUpdateStudentData}
             onUpdateMultipleStudentData={onUpdateMultipleStudentData}
@@ -115,6 +140,10 @@ const Dashboard: React.FC<DashboardProps> = (props) => {
             onAddNotice={onAddNotice}
             onDeleteNotice={onDeleteNotice}
             onBiometricSetup={onBiometricSetup}
+            onAddMaterial={onAddMaterial}
+            onDeleteMaterial={onDeleteMaterial}
+            activeView={activeStaffView}
+            setActiveView={setActiveStaffView}
         />;
       case Role.SUPER_ADMIN:
         return <SuperAdminView
@@ -133,16 +162,22 @@ const Dashboard: React.FC<DashboardProps> = (props) => {
             onAddMultipleStudents={onAddMultipleStudents}
             periodTimes={periodTimes}
             onBiometricSetup={onBiometricSetup}
+            onUpdatePassword={onUpdatePassword}
+            auditLogs={auditLogs}
         />;
       default:
         return <div>Invalid user role.</div>;
     }
   };
 
+  const activeNavItems = user.role === Role.STUDENT ? studentNavigationItems : staffNavigationItems;
+  const activeViewId = user.role === Role.STUDENT ? activeStudentView : activeStaffView;
+  const setActiveViewHandler = user.role === Role.STUDENT ? setActiveStudentView : setActiveStaffView;
+
   return (
     <div className="relative min-h-screen">
-       {/* Sidebar for Student */}
-      {user.role === Role.STUDENT && (
+       {/* Sidebar for Student and Staff */}
+      {(user.role === Role.STUDENT || user.role === Role.STAFF) && (
         <>
           <div 
               className={`fixed inset-0 bg-black bg-opacity-50 z-30 transition-opacity ${isSidebarOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
@@ -152,18 +187,20 @@ const Dashboard: React.FC<DashboardProps> = (props) => {
               className={`fixed top-0 left-0 h-full w-64 bg-white dark:bg-gray-800 shadow-lg z-40 transform transition-transform duration-300 ease-in-out ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}
           >
              <div className="p-4 pt-20 h-full overflow-y-auto">
-              <h2 className="text-lg font-bold text-gray-800 dark:text-white mb-4 px-3">Student Panel</h2>
+              <h2 className="text-lg font-bold text-gray-800 dark:text-white mb-4 px-3">
+                  {user.role === Role.STUDENT ? 'Student Panel' : 'Staff Management Hub'}
+              </h2>
               <nav>
                 <ul className="space-y-1">
-                  {studentNavigationItems.map(item => (
+                  {activeNavItems.map((item: any) => (
                     <li key={item.id}>
                       <button
                         onClick={() => {
-                          setActiveStudentView(item.id);
+                          setActiveViewHandler(item.id);
                           setIsSidebarOpen(false);
                         }}
                         className={`w-full flex items-center space-x-3 p-3 rounded-lg text-left transition-colors ${
-                          activeStudentView === item.id
+                          activeViewId === item.id
                             ? 'bg-blue-600 text-white shadow-lg'
                             : 'text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
                         }`}
@@ -183,7 +220,7 @@ const Dashboard: React.FC<DashboardProps> = (props) => {
       <header className="bg-white dark:bg-gray-800 shadow-md">
         <div className="py-4 px-4 sm:px-6 lg:px-8 flex justify-between items-center">
            <div className="flex items-center">
-            {user.role === Role.STUDENT && (
+            {(user.role === Role.STUDENT || user.role === Role.STAFF) && (
               <button
                 onClick={() => setIsSidebarOpen(!isSidebarOpen)}
                 className="p-2 -ml-2 mr-2 rounded-full text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 focus:outline-none"
